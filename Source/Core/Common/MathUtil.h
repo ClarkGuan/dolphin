@@ -5,10 +5,15 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <vector>
 
 #include "Common/CommonTypes.h"
+
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
 
 namespace MathUtil
 {
@@ -24,6 +29,7 @@ constexpr T SNANConstant()
 // will use __builtin_nans, which is improperly handled by the compiler and generates
 // a bad constant. Here we go back to the version MSVC used before the builtin.
 // TODO: Remove this and use numeric_limits directly whenever this bug is fixed.
+
 template <>
 constexpr double SNANConstant()
 {
@@ -43,9 +49,10 @@ constexpr T Clamp(const T val, const T& min, const T& max)
   return std::max(min, std::min(max, val));
 }
 
-constexpr bool IsPow2(u32 imm)
+template <typename T>
+constexpr bool IsPow2(T imm)
 {
-  return (imm & (imm - 1)) == 0;
+  return imm > 0 && (imm & (imm - 1)) == 0;
 }
 
 // The most significant bit of the fraction is an is-quiet bit on all architectures we care about.
@@ -126,10 +133,13 @@ u32 ClassifyDouble(double dvalue);
 // More efficient float version.
 u32 ClassifyFloat(float fvalue);
 
-extern const int frsqrte_expected_base[];
-extern const int frsqrte_expected_dec[];
-extern const int fres_expected_base[];
-extern const int fres_expected_dec[];
+struct BaseAndDec
+{
+  int m_base;
+  int m_dec;
+};
+extern const std::array<BaseAndDec, 32> frsqrte_expected;
+extern const std::array<BaseAndDec, 32> fres_expected;
 
 // PowerPC approximation algorithms
 double ApproximateReciprocalSquareRoot(double val);
@@ -189,7 +199,7 @@ inline int IntLog2(u64 val)
   return 63 - __builtin_clzll(val);
 
 #elif defined(_MSC_VER)
-  unsigned long result = -1;
+  unsigned long result = ULONG_MAX;
   _BitScanReverse64(&result, val);
   return result;
 

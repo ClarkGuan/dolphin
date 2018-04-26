@@ -5,29 +5,35 @@
 #pragma once
 
 #include <string>
-#include "Common/ChunkFile.h"
+
+#include "Common/CommonTypes.h"
 #include "Core/MachineContext.h"
-#include "Core/PowerPC/CPUCoreBase.h"
-#include "Core/PowerPC/Profiler.h"
+
+class CPUCoreBase;
+class PointerWrap;
+
+namespace Profiler
+{
+struct ProfileStats;
+}
 
 namespace JitInterface
 {
 enum class ExceptionType
 {
-  EXCEPTIONS_FIFO_WRITE,
-  EXCEPTIONS_PAIRED_QUANTIZE,
-  EXCEPTIONS_SPECULATIVE_CONSTANTS
+  FIFOWrite,
+  PairedQuantize,
+  SpeculativeConstants
 };
 
 void DoState(PointerWrap& p);
 
 CPUCoreBase* InitJitCore(int core);
-void InitTables(int core);
 CPUCoreBase* GetCore();
 
 // Debugging
 void WriteProfileResults(const std::string& filename);
-void GetProfileResults(ProfileStats* prof_stats);
+void GetProfileResults(Profiler::ProfileStats* prof_stats);
 int GetHostCode(u32* address, const u8** code, u32* code_size);
 
 // Memory Utilities

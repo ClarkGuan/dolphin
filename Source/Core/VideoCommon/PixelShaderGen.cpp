@@ -16,6 +16,7 @@
 #include "VideoCommon/DriverDetails.h"
 #include "VideoCommon/LightingShaderGen.h"
 #include "VideoCommon/NativeVertexFormat.h"
+#include "VideoCommon/RenderState.h"
 #include "VideoCommon/VertexLoaderManager.h"
 #include "VideoCommon/VideoCommon.h"
 #include "VideoCommon/VideoConfig.h"
@@ -170,17 +171,17 @@ PixelShaderUid GetPixelShaderUid()
   uid_data->genMode_numindstages = bpmem.genMode.numindstages;
   uid_data->genMode_numtevstages = bpmem.genMode.numtevstages;
   uid_data->genMode_numtexgens = bpmem.genMode.numtexgens;
-  uid_data->per_pixel_lighting = g_ActiveConfig.bEnablePixelLighting;
-  uid_data->bounding_box = g_ActiveConfig.backend_info.bSupportsBBox &&
+  uid_data->bounding_box = g_ActiveConfig.BBoxUseFragmentShaderImplementation() &&
                            g_ActiveConfig.bBBoxEnable && BoundingBox::active;
   uid_data->rgba6_format =
       bpmem.zcontrol.pixel_format == PEControl::RGBA6_Z24 && !g_ActiveConfig.bForceTrueColor;
   uid_data->dither = bpmem.blendmode.dither && uid_data->rgba6_format;
+  uid_data->uint_output = bpmem.blendmode.UseLogicOp();
 
   u32 numStages = uid_data->genMode_numtevstages + 1;
 
   const bool forced_early_z =
-      g_ActiveConfig.backend_info.bSupportsEarlyZ && bpmem.UseEarlyDepthTest() &&
+      bpmem.UseEarlyDepthTest() &&
       (g_ActiveConfig.bFastDepthCalc || bpmem.alpha_test.TestResult() == AlphaTest::UNDETERMINED)
       // We can't allow early_ztest for zfreeze because depth is overridden per-pixel.
       // This means it's impossible for zcomploc to be emulated on a zfrozen polygon.
@@ -192,24 +193,8 @@ PixelShaderUid GetPixelShaderUid()
 
   uid_data->per_pixel_depth = per_pixel_depth;
   uid_data->forced_early_z = forced_early_z;
-  uid_data->fast_depth_calc = g_ActiveConfig.bFastDepthCalc;
-  uid_data->msaa = g_ActiveConfig.iMultisamples > 1;
-  uid_data->ssaa = g_ActiveConfig.iMultisamples > 1 && g_ActiveConfig.bSSAA;
-  uid_data->stereo = g_ActiveConfig.iStereoMode > 0;
 
-  if (!uid_data->forced_early_z && bpmem.UseEarlyDepthTest() &&
-      (!uid_data->fast_depth_calc || bpmem.alpha_test.TestResult() == AlphaTest::UNDETERMINED))
-  {
-    static bool warn_once = true;
-    if (warn_once)
-      WARN_LOG(VIDEO, "Early z test enabled but not possible to emulate with current "
-                      "configuration. Make sure to enable fast depth calculations. If this message "
-                      "still shows up your hardware isn't able to emulate the feature properly (a "
-                      "GPU with D3D 11.0 / OGL 4.2 support is required).");
-    warn_once = false;
-  }
-
-  if (uid_data->per_pixel_lighting)
+  if (g_ActiveConfig.bEnablePixelLighting)
   {
     // The lighting shader only needs the two color bits of the 23bit component bit array.
     uid_data->components =
@@ -297,7 +282,7 @@ PixelShaderUid GetPixelShaderUid()
   }
 
 #define MY_STRUCT_OFFSET(str, elem) ((u32)((u64) & (str).elem - (u64) & (str)))
-  uid_data->num_values = (uid_data->per_pixel_lighting) ?
+  uid_data->num_values = (g_ActiveConfig.bEnablePixelLighting) ?
                              sizeof(*uid_data) :
                              MY_STRUCT_OFFSET(*uid_data, stagehash[numStages]);
 
@@ -335,31 +320,37 @@ PixelShaderUid GetPixelShaderUid()
   uid_data->fog_proj = bpmem.fog.c_proj_fsel.proj;
   uid_data->fog_RangeBaseEnabled = bpmem.fogRange.Base.Enabled;
 
+  BlendingState state = {};
+  state.Generate(bpmem);
+
+  if (state.usedualsrc && state.dstalpha && g_ActiveConfig.backend_info.bSupportsFramebufferFetch &&
+      !g_ActiveConfig.backend_info.bSupportsDualSourceBlend)
+  {
+    uid_data->blend_enable = state.blendenable;
+    uid_data->blend_src_factor = state.srcfactor;
+    uid_data->blend_src_factor_alpha = state.srcfactoralpha;
+    uid_data->blend_dst_factor = state.dstfactor;
+    uid_data->blend_dst_factor_alpha = state.dstfactoralpha;
+    uid_data->blend_subtract = state.subtract;
+    uid_data->blend_subtract_alpha = state.subtractAlpha;
+  }
+
   return out;
 }
 
-static void WriteStage(ShaderCode& out, const pixel_shader_uid_data* uid_data, int n,
-                       APIType ApiType);
-static void WriteTevRegular(ShaderCode& out, const char* components, int bias, int op, int clamp,
-                            int shift, bool alpha);
-static void SampleTexture(ShaderCode& out, const char* texcoords, const char* texswap, int texmap,
-                          bool stereo, APIType ApiType);
-static void WriteAlphaTest(ShaderCode& out, const pixel_shader_uid_data* uid_data, APIType ApiType,
-                           bool per_pixel_depth, bool use_dual_source);
-static void WriteFog(ShaderCode& out, const pixel_shader_uid_data* uid_data);
-static void WriteColor(ShaderCode& out, const pixel_shader_uid_data* uid_data,
-                       bool use_dual_source);
-
-ShaderCode GeneratePixelShaderCode(APIType ApiType, const pixel_shader_uid_data* uid_data)
+void ClearUnusedPixelShaderUidBits(APIType ApiType, PixelShaderUid* uid)
 {
-  ShaderCode out;
+  pixel_shader_uid_data* uid_data = uid->GetUidData<pixel_shader_uid_data>();
 
-  u32 numStages = uid_data->genMode_numtevstages + 1;
+  // OpenGL and Vulkan convert implicitly normalized color outputs to their uint representation.
+  // Therefore, it is not necessary to use a uint output on these backends.
+  if (ApiType != APIType::D3D)
+    uid_data->uint_output = 0;
+}
 
-  out.Write("//Pixel Shader for TEV stages\n");
-  out.Write("//%i TEV stages, %i texgens, %i IND stages\n", numStages, uid_data->genMode_numtexgens,
-            uid_data->genMode_numindstages);
-
+void WritePixelShaderCommonHeader(ShaderCode& out, APIType ApiType, u32 num_texgens,
+                                  bool per_pixel_lighting, bool bounding_box)
+{
   // dot product for integer vectors
   out.Write("int idot(int3 x, int3 y)\n"
             "{\n"
@@ -379,25 +370,9 @@ ShaderCode GeneratePixelShaderCode(APIType ApiType, const pixel_shader_uid_data*
             "int3 iround(float3 x) { return int3(round(x)); }\n"
             "int4 iround(float4 x) { return int4(round(x)); }\n\n");
 
-  out.Write("int  itrunc(float  x) { return int (trunc(x)); }\n"
-            "int2 itrunc(float2 x) { return int2(trunc(x)); }\n"
-            "int3 itrunc(float3 x) { return int3(trunc(x)); }\n"
-            "int4 itrunc(float4 x) { return int4(trunc(x)); }\n\n");
-
-  if (ApiType == APIType::OpenGL)
+  if (ApiType == APIType::OpenGL || ApiType == APIType::Vulkan)
   {
     out.Write("SAMPLER_BINDING(0) uniform sampler2DArray samp[8];\n");
-  }
-  else if (ApiType == APIType::Vulkan)
-  {
-    out.Write("SAMPLER_BINDING(0) uniform sampler2DArray samp0;\n");
-    out.Write("SAMPLER_BINDING(1) uniform sampler2DArray samp1;\n");
-    out.Write("SAMPLER_BINDING(2) uniform sampler2DArray samp2;\n");
-    out.Write("SAMPLER_BINDING(3) uniform sampler2DArray samp3;\n");
-    out.Write("SAMPLER_BINDING(4) uniform sampler2DArray samp4;\n");
-    out.Write("SAMPLER_BINDING(5) uniform sampler2DArray samp5;\n");
-    out.Write("SAMPLER_BINDING(6) uniform sampler2DArray samp6;\n");
-    out.Write("SAMPLER_BINDING(7) uniform sampler2DArray samp7;\n");
   }
   else  // D3D
   {
@@ -422,12 +397,38 @@ ShaderCode GeneratePixelShaderCode(APIType ApiType, const pixel_shader_uid_data*
             "\tint4 " I_INDTEXMTX "[6];\n"
             "\tint4 " I_FOGCOLOR ";\n"
             "\tint4 " I_FOGI ";\n"
-            "\tfloat4 " I_FOGF "[2];\n"
+            "\tfloat4 " I_FOGF ";\n"
+            "\tfloat4 " I_FOGRANGE "[3];\n"
             "\tfloat4 " I_ZSLOPE ";\n"
-            "\tfloat4 " I_EFBSCALE ";\n"
-            "};\n");
+            "\tfloat2 " I_EFBSCALE ";\n"
+            "\tuint  bpmem_genmode;\n"
+            "\tuint  bpmem_alphaTest;\n"
+            "\tuint  bpmem_fogParam3;\n"
+            "\tuint  bpmem_fogRangeBase;\n"
+            "\tuint  bpmem_dstalpha;\n"
+            "\tuint  bpmem_ztex_op;\n"
+            "\tbool  bpmem_late_ztest;\n"
+            "\tbool  bpmem_rgba6_format;\n"
+            "\tbool  bpmem_dither;\n"
+            "\tbool  bpmem_bounding_box;\n"
+            "\tuint4 bpmem_pack1[16];\n"  // .xy - combiners, .z - tevind
+            "\tuint4 bpmem_pack2[8];\n"   // .x - tevorder, .y - tevksel
+            "\tint4  konstLookup[32];\n"
+            "\tbool  blend_enable;\n"
+            "\tuint  blend_src_factor;\n"
+            "\tuint  blend_src_factor_alpha;\n"
+            "\tuint  blend_dst_factor;\n"
+            "\tuint  blend_dst_factor_alpha;\n"
+            "\tbool  blend_subtract;\n"
+            "\tbool  blend_subtract_alpha;\n"
+            "};\n\n");
+  out.Write("#define bpmem_combiners(i) (bpmem_pack1[(i)].xy)\n"
+            "#define bpmem_tevind(i) (bpmem_pack1[(i)].z)\n"
+            "#define bpmem_iref(i) (bpmem_pack1[(i)].w)\n"
+            "#define bpmem_tevorder(i) (bpmem_pack2[(i)].x)\n"
+            "#define bpmem_tevksel(i) (bpmem_pack2[(i)].y)\n\n");
 
-  if (uid_data->per_pixel_lighting)
+  if (per_pixel_lighting)
   {
     out.Write("%s", s_lighting_struct);
 
@@ -440,7 +441,7 @@ ShaderCode GeneratePixelShaderCode(APIType ApiType, const pixel_shader_uid_data*
     out.Write("};\n");
   }
 
-  if (uid_data->bounding_box)
+  if (bounding_box)
   {
     if (ApiType == APIType::OpenGL || ApiType == APIType::Vulkan)
     {
@@ -455,11 +456,43 @@ ShaderCode GeneratePixelShaderCode(APIType ApiType, const pixel_shader_uid_data*
   }
 
   out.Write("struct VS_OUTPUT {\n");
-  GenerateVSOutputMembers(out, ApiType, uid_data->genMode_numtexgens, uid_data->per_pixel_lighting,
-                          "");
+  GenerateVSOutputMembers(out, ApiType, num_texgens, per_pixel_lighting, "");
   out.Write("};\n");
+}
 
-  if (uid_data->forced_early_z)
+static void WriteStage(ShaderCode& out, const pixel_shader_uid_data* uid_data, int n,
+                       APIType ApiType, bool stereo);
+static void WriteTevRegular(ShaderCode& out, const char* components, int bias, int op, int clamp,
+                            int shift, bool alpha);
+static void SampleTexture(ShaderCode& out, const char* texcoords, const char* texswap, int texmap,
+                          bool stereo, APIType ApiType);
+static void WriteAlphaTest(ShaderCode& out, const pixel_shader_uid_data* uid_data, APIType ApiType,
+                           bool per_pixel_depth, bool use_dual_source);
+static void WriteFog(ShaderCode& out, const pixel_shader_uid_data* uid_data);
+static void WriteColor(ShaderCode& out, APIType api_type, const pixel_shader_uid_data* uid_data,
+                       bool use_dual_source);
+static void WriteBlend(ShaderCode& out, const pixel_shader_uid_data* uid_data);
+
+ShaderCode GeneratePixelShaderCode(APIType ApiType, const ShaderHostConfig& host_config,
+                                   const pixel_shader_uid_data* uid_data)
+{
+  ShaderCode out;
+
+  const bool per_pixel_lighting = g_ActiveConfig.bEnablePixelLighting;
+  const bool msaa = host_config.msaa;
+  const bool ssaa = host_config.ssaa;
+  const bool stereo = host_config.stereo;
+  const u32 numStages = uid_data->genMode_numtevstages + 1;
+
+  out.Write("//Pixel Shader for TEV stages\n");
+  out.Write("//%i TEV stages, %i texgens, %i IND stages\n", numStages, uid_data->genMode_numtexgens,
+            uid_data->genMode_numindstages);
+
+  // Stuff that is shared between ubershaders and pixelgen.
+  WritePixelShaderCommonHeader(out, ApiType, uid_data->genMode_numtexgens, per_pixel_lighting,
+                               uid_data->bounding_box);
+
+  if (uid_data->forced_early_z && g_ActiveConfig.backend_info.bSupportsEarlyZ)
   {
     // Zcomploc (aka early_ztest) is a way to control whether depth test is done before
     // or after texturing and alpha test. PC graphics APIs used to provide no way to emulate
@@ -508,9 +541,11 @@ ShaderCode GeneratePixelShaderCode(APIType ApiType, const pixel_shader_uid_data*
 
   // Only use dual-source blending when required on drivers that don't support it very well.
   const bool use_dual_source =
-      g_ActiveConfig.backend_info.bSupportsDualSourceBlend &&
+      host_config.backend_dual_source_blend &&
       (!DriverDetails::HasBug(DriverDetails::BUG_BROKEN_DUAL_SOURCE_BLENDING) ||
        uid_data->useDstAlpha);
+  const bool use_shader_blend =
+      !use_dual_source && (uid_data->useDstAlpha && host_config.backend_shader_framebuffer_fetch);
 
   if (ApiType == APIType::OpenGL || ApiType == APIType::Vulkan)
   {
@@ -527,6 +562,21 @@ ShaderCode GeneratePixelShaderCode(APIType ApiType, const pixel_shader_uid_data*
         out.Write("FRAGMENT_OUTPUT_LOCATION_INDEXED(0, 1) out vec4 ocol1;\n");
       }
     }
+    else if (use_shader_blend)
+    {
+      // QComm's Adreno driver doesn't seem to like using the framebuffer_fetch value as an
+      // intermediate value with multiple reads & modifications, so pull out the "real" output value
+      // and use a temporary for calculations, then set the output value once at the end of the
+      // shader
+      if (DriverDetails::HasBug(DriverDetails::BUG_BROKEN_FRAGMENT_SHADER_INDEX_DECORATION))
+      {
+        out.Write("FRAGMENT_OUTPUT_LOCATION(0) FRAGMENT_INOUT vec4 real_ocol0;\n");
+      }
+      else
+      {
+        out.Write("FRAGMENT_OUTPUT_LOCATION_INDEXED(0, 0) FRAGMENT_INOUT vec4 real_ocol0;\n");
+      }
+    }
     else
     {
       out.Write("FRAGMENT_OUTPUT_LOCATION(0) out vec4 ocol0;\n");
@@ -536,82 +586,76 @@ ShaderCode GeneratePixelShaderCode(APIType ApiType, const pixel_shader_uid_data*
       out.Write("#define depth gl_FragDepth\n");
 
     // We need to always use output blocks for Vulkan, but geometry shaders are also optional.
-    if (g_ActiveConfig.backend_info.bSupportsGeometryShaders || ApiType == APIType::Vulkan)
+    if (host_config.backend_geometry_shaders || ApiType == APIType::Vulkan)
     {
       out.Write("VARYING_LOCATION(0) in VertexData {\n");
-      GenerateVSOutputMembers(
-          out, ApiType, uid_data->genMode_numtexgens, uid_data->per_pixel_lighting,
-          GetInterpolationQualifier(uid_data->msaa, uid_data->ssaa, true, true));
+      GenerateVSOutputMembers(out, ApiType, uid_data->genMode_numtexgens, per_pixel_lighting,
+                              GetInterpolationQualifier(msaa, ssaa, true, true));
 
-      if (uid_data->stereo)
+      if (stereo)
         out.Write("\tflat int layer;\n");
 
       out.Write("};\n");
     }
     else
     {
-      out.Write("%s in float4 colors_0;\n",
-                GetInterpolationQualifier(uid_data->msaa, uid_data->ssaa));
-      out.Write("%s in float4 colors_1;\n",
-                GetInterpolationQualifier(uid_data->msaa, uid_data->ssaa));
+      out.Write("%s in float4 colors_0;\n", GetInterpolationQualifier(msaa, ssaa));
+      out.Write("%s in float4 colors_1;\n", GetInterpolationQualifier(msaa, ssaa));
       // compute window position if needed because binding semantic WPOS is not widely supported
       // Let's set up attributes
       for (unsigned int i = 0; i < uid_data->genMode_numtexgens; ++i)
       {
-        out.Write("%s in float3 uv%d;\n", GetInterpolationQualifier(uid_data->msaa, uid_data->ssaa),
-                  i);
+        out.Write("%s in float3 tex%d;\n", GetInterpolationQualifier(msaa, ssaa), i);
       }
-      out.Write("%s in float4 clipPos;\n",
-                GetInterpolationQualifier(uid_data->msaa, uid_data->ssaa));
-      if (uid_data->per_pixel_lighting)
+      out.Write("%s in float4 clipPos;\n", GetInterpolationQualifier(msaa, ssaa));
+      if (per_pixel_lighting)
       {
-        out.Write("%s in float3 Normal;\n",
-                  GetInterpolationQualifier(uid_data->msaa, uid_data->ssaa));
-        out.Write("%s in float3 WorldPos;\n",
-                  GetInterpolationQualifier(uid_data->msaa, uid_data->ssaa));
+        out.Write("%s in float3 Normal;\n", GetInterpolationQualifier(msaa, ssaa));
+        out.Write("%s in float3 WorldPos;\n", GetInterpolationQualifier(msaa, ssaa));
       }
     }
 
     out.Write("void main()\n{\n");
-
-    if (g_ActiveConfig.backend_info.bSupportsGeometryShaders || ApiType == APIType::Vulkan)
-    {
-      for (unsigned int i = 0; i < uid_data->genMode_numtexgens; ++i)
-        out.Write("\tfloat3 uv%d = tex%d;\n", i, i);
-    }
-
     out.Write("\tfloat4 rawpos = gl_FragCoord;\n");
+    if (use_shader_blend)
+    {
+      // Store off a copy of the initial fb value for blending
+      out.Write("\tfloat4 initial_ocol0 = FB_FETCH_VALUE;\n");
+      out.Write("\tfloat4 ocol0;\n");
+      out.Write("\tfloat4 ocol1;\n");
+    }
   }
   else  // D3D
   {
     out.Write("void main(\n");
-    out.Write("  out float4 ocol0 : SV_Target0,\n"
-              "  out float4 ocol1 : SV_Target1,\n%s"
+    if (uid_data->uint_output)
+      out.Write("  out uint4 ocol0 : SV_Target,\n");
+    else
+      out.Write("  out float4 ocol0 : SV_Target0,\n"
+                "  out float4 ocol1 : SV_Target1,\n");
+    out.Write("%s"
               "  in float4 rawpos : SV_Position,\n",
               uid_data->per_pixel_depth ? "  out float depth : SV_Depth,\n" : "");
 
-    out.Write("  in %s float4 colors_0 : COLOR0,\n",
-              GetInterpolationQualifier(uid_data->msaa, uid_data->ssaa));
-    out.Write("  in %s float4 colors_1 : COLOR1\n",
-              GetInterpolationQualifier(uid_data->msaa, uid_data->ssaa));
+    out.Write("  in %s float4 colors_0 : COLOR0,\n", GetInterpolationQualifier(msaa, ssaa));
+    out.Write("  in %s float4 colors_1 : COLOR1\n", GetInterpolationQualifier(msaa, ssaa));
 
     // compute window position if needed because binding semantic WPOS is not widely supported
     for (unsigned int i = 0; i < uid_data->genMode_numtexgens; ++i)
-      out.Write(",\n  in %s float3 uv%d : TEXCOORD%d",
-                GetInterpolationQualifier(uid_data->msaa, uid_data->ssaa), i, i);
-    out.Write(",\n  in %s float4 clipPos : TEXCOORD%d",
-              GetInterpolationQualifier(uid_data->msaa, uid_data->ssaa),
+      out.Write(",\n  in %s float3 tex%d : TEXCOORD%d", GetInterpolationQualifier(msaa, ssaa), i,
+                i);
+    out.Write(",\n  in %s float4 clipPos : TEXCOORD%d", GetInterpolationQualifier(msaa, ssaa),
               uid_data->genMode_numtexgens);
-    if (uid_data->per_pixel_lighting)
+    if (per_pixel_lighting)
     {
-      out.Write(",\n  in %s float3 Normal : TEXCOORD%d",
-                GetInterpolationQualifier(uid_data->msaa, uid_data->ssaa),
+      out.Write(",\n  in %s float3 Normal : TEXCOORD%d", GetInterpolationQualifier(msaa, ssaa),
                 uid_data->genMode_numtexgens + 1);
-      out.Write(",\n  in %s float3 WorldPos : TEXCOORD%d",
-                GetInterpolationQualifier(uid_data->msaa, uid_data->ssaa),
+      out.Write(",\n  in %s float3 WorldPos : TEXCOORD%d", GetInterpolationQualifier(msaa, ssaa),
                 uid_data->genMode_numtexgens + 2);
     }
-    if (uid_data->stereo)
+    out.Write(",\n  in float clipDist0 : SV_ClipDistance0\n");
+    out.Write(",\n  in float clipDist1 : SV_ClipDistance1\n");
+    if (stereo)
       out.Write(",\n  in uint layer : SV_RenderTargetArrayIndex\n");
     out.Write("        ) {\n");
   }
@@ -633,7 +677,7 @@ ShaderCode GeneratePixelShaderCode(APIType ApiType, const pixel_shader_uid_data*
   out.Write("\tfloat4 col0 = colors_0;\n");
   out.Write("\tfloat4 col1 = colors_1;\n");
 
-  if (uid_data->per_pixel_lighting)
+  if (per_pixel_lighting)
   {
     out.Write("\tfloat3 _norm0 = normalize(Normal.xyz);\n\n");
     out.Write("\tfloat3 pos = WorldPos;\n");
@@ -648,7 +692,7 @@ ShaderCode GeneratePixelShaderCode(APIType ApiType, const pixel_shader_uid_data*
     // out.SetConstantsUsed(C_PLIGHTS, C_PLIGHTS+31); // TODO: Can be optimized further
     // out.SetConstantsUsed(C_PMATERIALS, C_PMATERIALS+3);
     GenerateLightingShaderCode(out, uid_data->lighting, uid_data->components << VB_COL_SHIFT,
-                               uid_data->numColorChans, "colors_", "col");
+                               "colors_", "col");
   }
 
   // HACK to handle cases where the tex gen is not enabled
@@ -661,8 +705,8 @@ ShaderCode GeneratePixelShaderCode(APIType ApiType, const pixel_shader_uid_data*
     out.SetConstantsUsed(C_TEXDIMS, C_TEXDIMS + uid_data->genMode_numtexgens - 1);
     for (unsigned int i = 0; i < uid_data->genMode_numtexgens; ++i)
     {
-      out.Write("\tint2 fixpoint_uv%d = itrunc(", i);
-      out.Write("(uv%d.z == 0.0 ? uv%d.xy : uv%d.xy / uv%d.z)", i, i, i, i);
+      out.Write("\tint2 fixpoint_uv%d = int2(", i);
+      out.Write("(tex%d.z == 0.0 ? tex%d.xy : tex%d.xy / tex%d.z)", i, i, i, i);
       out.Write(" * " I_TEXDIMS "[%d].zw);\n", i);
       // TODO: S24 overflows here?
     }
@@ -685,12 +729,12 @@ ShaderCode GeneratePixelShaderCode(APIType ApiType, const pixel_shader_uid_data*
         out.Write("\ttempcoord = int2(0, 0);\n");
 
       out.Write("\tint3 iindtex%d = ", i);
-      SampleTexture(out, "float2(tempcoord)", "abg", texmap, uid_data->stereo, ApiType);
+      SampleTexture(out, "float2(tempcoord)", "abg", texmap, stereo, ApiType);
     }
   }
 
   for (unsigned int i = 0; i < numStages; i++)
-    WriteStage(out, uid_data, i, ApiType);  // build the equation for this stage
+    WriteStage(out, uid_data, i, ApiType, stereo);  // build the equation for this stage
 
   {
     // The results of the last texenv stage are put onto the screen,
@@ -715,7 +759,8 @@ ShaderCode GeneratePixelShaderCode(APIType ApiType, const pixel_shader_uid_data*
   // testing result)
   if (uid_data->Pretest == AlphaTest::UNDETERMINED ||
       (uid_data->Pretest == AlphaTest::FAIL && uid_data->late_ztest))
-    WriteAlphaTest(out, uid_data, ApiType, uid_data->per_pixel_depth, use_dual_source);
+    WriteAlphaTest(out, uid_data, ApiType, uid_data->per_pixel_depth,
+                   use_dual_source || use_shader_blend);
 
   if (uid_data->zfreeze)
   {
@@ -731,7 +776,7 @@ ShaderCode GeneratePixelShaderCode(APIType ApiType, const pixel_shader_uid_data*
     out.Write("\tint zCoord = int(" I_ZSLOPE ".z + " I_ZSLOPE ".x * screenpos.x + " I_ZSLOPE
               ".y * screenpos.y);\n");
   }
-  else if (!uid_data->fast_depth_calc)
+  else if (!host_config.fast_depth_calc)
   {
     // FastDepth means to trust the depth generated in perspective division.
     // It should be correct, but it seems not to be as accurate as required. TODO: Find out why!
@@ -798,7 +843,11 @@ ShaderCode GeneratePixelShaderCode(APIType ApiType, const pixel_shader_uid_data*
   WriteFog(out, uid_data);
 
   // Write the color and alpha values to the framebuffer
-  WriteColor(out, uid_data, use_dual_source);
+  // If using shader blend, we still use the separate alpha
+  WriteColor(out, ApiType, uid_data, use_dual_source || use_shader_blend);
+
+  if (use_shader_blend)
+    WriteBlend(out, uid_data);
 
   if (uid_data->bounding_box)
   {
@@ -817,7 +866,7 @@ ShaderCode GeneratePixelShaderCode(APIType ApiType, const pixel_shader_uid_data*
 }
 
 static void WriteStage(ShaderCode& out, const pixel_shader_uid_data* uid_data, int n,
-                       APIType ApiType)
+                       APIType ApiType, bool stereo)
 {
   auto& stage = uid_data->stagehash[n];
   out.Write("\n\t// TEV stage %d\n", n);
@@ -841,7 +890,7 @@ static void WriteStage(ShaderCode& out, const pixel_shader_uid_data* uid_data, i
       const char* tevIndAlphaSel[] = {"", "x", "y", "z"};
       const char* tevIndAlphaMask[] = {"248", "224", "240",
                                        "248"};  // 0b11111000, 0b11100000, 0b11110000, 0b11111000
-      out.Write("alphabump = iindtex%d.%s & %s;\n", tevind.bt, tevIndAlphaSel[tevind.bs],
+      out.Write("alphabump = iindtex%d.%s & %s;\n", tevind.bt.Value(), tevIndAlphaSel[tevind.bs],
                 tevIndAlphaMask[tevind.fmt]);
     }
     else
@@ -853,7 +902,8 @@ static void WriteStage(ShaderCode& out, const pixel_shader_uid_data* uid_data, i
     {
       // format
       const char* tevIndFmtMask[] = {"255", "31", "15", "7"};
-      out.Write("\tint3 iindtevcrd%d = iindtex%d & %s;\n", n, tevind.bt, tevIndFmtMask[tevind.fmt]);
+      out.Write("\tint3 iindtevcrd%d = iindtex%d & %s;\n", n, tevind.bt.Value(),
+                tevIndFmtMask[tevind.fmt]);
 
       // bias - TODO: Check if this needs to be this complicated..
       const char* tevIndBiasField[] = {"",  "x",  "y",  "xy",
@@ -881,35 +931,64 @@ static void WriteStage(ShaderCode& out, const pixel_shader_uid_data* uid_data, i
                   n, mtxidx, n, mtxidx + 1, n);
 
         // TODO: should use a shader uid branch for this for better performance
-        out.Write("\tif (" I_INDTEXMTX "[%d].w >= 0) indtevtrans%d >>= " I_INDTEXMTX "[%d].w;\n",
-                  mtxidx, n, mtxidx);
-        out.Write("\telse indtevtrans%d <<= (-" I_INDTEXMTX "[%d].w);\n", n, mtxidx);
+        if (DriverDetails::HasBug(DriverDetails::BUG_BROKEN_BITWISE_OP_NEGATION))
+        {
+          out.Write("\tint indtexmtx_w_inverse_%d = -" I_INDTEXMTX "[%d].w;\n", n, mtxidx);
+          out.Write("\tif (" I_INDTEXMTX "[%d].w >= 0) indtevtrans%d >>= " I_INDTEXMTX "[%d].w;\n",
+                    mtxidx, n, mtxidx);
+          out.Write("\telse indtevtrans%d <<= indtexmtx_w_inverse_%d;\n", n, n);
+        }
+        else
+        {
+          out.Write("\tif (" I_INDTEXMTX "[%d].w >= 0) indtevtrans%d >>= " I_INDTEXMTX "[%d].w;\n",
+                    mtxidx, n, mtxidx);
+          out.Write("\telse indtevtrans%d <<= (-" I_INDTEXMTX "[%d].w);\n", n, mtxidx);
+        }
       }
       else if (tevind.mid <= 7 && bHasTexCoord)
       {  // s matrix
-        _assert_(tevind.mid >= 5);
+        ASSERT(tevind.mid >= 5);
         int mtxidx = 2 * (tevind.mid - 5);
         out.SetConstantsUsed(C_INDTEXMTX + mtxidx, C_INDTEXMTX + mtxidx);
 
         out.Write("\tint2 indtevtrans%d = int2(fixpoint_uv%d * iindtevcrd%d.xx) >> 8;\n", n,
                   texcoord, n);
-
-        out.Write("\tif (" I_INDTEXMTX "[%d].w >= 0) indtevtrans%d >>= " I_INDTEXMTX "[%d].w;\n",
-                  mtxidx, n, mtxidx);
-        out.Write("\telse indtevtrans%d <<= (-" I_INDTEXMTX "[%d].w);\n", n, mtxidx);
+        if (DriverDetails::HasBug(DriverDetails::BUG_BROKEN_BITWISE_OP_NEGATION))
+        {
+          out.Write("\tint  indtexmtx_w_inverse_%d = -" I_INDTEXMTX "[%d].w;\n", n, mtxidx);
+          out.Write("\tif (" I_INDTEXMTX "[%d].w >= 0) indtevtrans%d >>= " I_INDTEXMTX "[%d].w;\n",
+                    mtxidx, n, mtxidx);
+          out.Write("\telse indtevtrans%d <<= (indtexmtx_w_inverse_%d);\n", n, n);
+        }
+        else
+        {
+          out.Write("\tif (" I_INDTEXMTX "[%d].w >= 0) indtevtrans%d >>= " I_INDTEXMTX "[%d].w;\n",
+                    mtxidx, n, mtxidx);
+          out.Write("\telse indtevtrans%d <<= (-" I_INDTEXMTX "[%d].w);\n", n, mtxidx);
+        }
       }
       else if (tevind.mid <= 11 && bHasTexCoord)
       {  // t matrix
-        _assert_(tevind.mid >= 9);
+        ASSERT(tevind.mid >= 9);
         int mtxidx = 2 * (tevind.mid - 9);
         out.SetConstantsUsed(C_INDTEXMTX + mtxidx, C_INDTEXMTX + mtxidx);
 
         out.Write("\tint2 indtevtrans%d = int2(fixpoint_uv%d * iindtevcrd%d.yy) >> 8;\n", n,
                   texcoord, n);
 
-        out.Write("\tif (" I_INDTEXMTX "[%d].w >= 0) indtevtrans%d >>= " I_INDTEXMTX "[%d].w;\n",
-                  mtxidx, n, mtxidx);
-        out.Write("\telse indtevtrans%d <<= (-" I_INDTEXMTX "[%d].w);\n", n, mtxidx);
+        if (DriverDetails::HasBug(DriverDetails::BUG_BROKEN_BITWISE_OP_NEGATION))
+        {
+          out.Write("\tint  indtexmtx_w_inverse_%d = -" I_INDTEXMTX "[%d].w;\n", n, mtxidx);
+          out.Write("\tif (" I_INDTEXMTX "[%d].w >= 0) indtevtrans%d >>= " I_INDTEXMTX "[%d].w;\n",
+                    mtxidx, n, mtxidx);
+          out.Write("\telse indtevtrans%d <<= (indtexmtx_w_inverse_%d);\n", n, n);
+        }
+        else
+        {
+          out.Write("\tif (" I_INDTEXMTX "[%d].w >= 0) indtevtrans%d >>= " I_INDTEXMTX "[%d].w;\n",
+                    mtxidx, n, mtxidx);
+          out.Write("\telse indtevtrans%d <<= (-" I_INDTEXMTX "[%d].w);\n", n, mtxidx);
+        }
       }
       else
       {
@@ -987,8 +1066,7 @@ static void WriteStage(ShaderCode& out, const pixel_shader_uid_data* uid_data, i
         out.Write("\ttevcoord.xy = int2(0, 0);\n");
     }
     out.Write("\ttextemp = ");
-    SampleTexture(out, "float2(tevcoord.xy)", texswap, stage.tevorders_texmap, uid_data->stereo,
-                  ApiType);
+    SampleTexture(out, "float2(tevcoord.xy)", texswap, stage.tevorders_texmap, stereo, ApiType);
   }
   else
   {
@@ -1116,7 +1194,10 @@ static void WriteTevRegular(ShaderCode& out, const char* components, int bias, i
 
   const char* tevLerpBias[] =  // indexed by 2*op+(shift==3)
       {
-          "", " + 128", "", " + 127",
+          "",
+          " + 128",
+          "",
+          " + 127",
       };
 
   const char* tevBiasTable[] = {
@@ -1154,11 +1235,6 @@ static void SampleTexture(ShaderCode& out, const char* texcoords, const char* te
     out.Write("iround(255.0 * Tex[%d].Sample(samp[%d], float3(%s.xy * " I_TEXDIMS
               "[%d].xy, %s))).%s;\n",
               texmap, texmap, texcoords, texmap, stereo ? "layer" : "0.0", texswap);
-  }
-  else if (ApiType == APIType::Vulkan)
-  {
-    out.Write("iround(255.0 * texture(samp%d, float3(%s.xy * " I_TEXDIMS "[%d].xy, %s))).%s;\n",
-              texmap, texcoords, texmap, stereo ? "layer" : "0.0", texswap);
   }
   else
   {
@@ -1213,7 +1289,7 @@ static void WriteAlphaTest(ShaderCode& out, const pixel_shader_uid_data* uid_dat
     out.Write(")) {\n");
 
   out.Write("\t\tocol0 = float4(0.0, 0.0, 0.0, 0.0);\n");
-  if (use_dual_source)
+  if (use_dual_source && !(ApiType == APIType::D3D && uid_data->uint_output))
     out.Write("\t\tocol1 = float4(0.0, 0.0, 0.0, 0.0);\n");
   if (per_pixel_depth)
   {
@@ -1259,30 +1335,33 @@ static void WriteFog(ShaderCode& out, const pixel_shader_uid_data* uid_data)
     // renderer)
     //       Maybe we want to use "ze = (A << B_SHF)/((B << B_SHF) - Zs)" instead?
     //       That's equivalent, but keeps the lower bits of Zs.
-    out.Write("\tfloat ze = (" I_FOGF "[1].x * 16777216.0) / float(" I_FOGI
-              ".y - (zCoord >> " I_FOGI ".w));\n");
+    out.Write("\tfloat ze = (" I_FOGF ".x * 16777216.0) / float(" I_FOGI ".y - (zCoord >> " I_FOGI
+              ".w));\n");
   }
   else
   {
     // orthographic
     // ze = a*Zs    (here, no B_SHF)
-    out.Write("\tfloat ze = " I_FOGF "[1].x * float(zCoord) / 16777216.0;\n");
+    out.Write("\tfloat ze = " I_FOGF ".x * float(zCoord) / 16777216.0;\n");
   }
 
   // x_adjust = sqrt((x-center)^2 + k^2)/k
   // ze *= x_adjust
-  // TODO Instead of this theoretical calculation, we should use the
-  //      coefficient table given in the fog range BP registers!
   if (uid_data->fog_RangeBaseEnabled)
   {
     out.SetConstantsUsed(C_FOGF, C_FOGF);
-    out.Write("\tfloat x_adjust = (2.0 * (rawpos.x / " I_FOGF "[0].y)) - 1.0 - " I_FOGF "[0].x;\n");
-    out.Write("\tx_adjust = sqrt(x_adjust * x_adjust + " I_FOGF "[0].z * " I_FOGF "[0].z) / " I_FOGF
-              "[0].z;\n");
+    out.Write("\tfloat offset = (2.0 * (rawpos.x / " I_FOGF ".w)) - 1.0 - " I_FOGF ".z;\n");
+    out.Write("\tfloat floatindex = clamp(9.0 - abs(offset) * 9.0, 0.0, 9.0);\n");
+    out.Write("\tuint indexlower = uint(floor(floatindex));\n");
+    out.Write("\tuint indexupper = indexlower + 1u;\n");
+    out.Write("\tfloat klower = " I_FOGRANGE "[indexlower >> 2u][indexlower & 3u];\n");
+    out.Write("\tfloat kupper = " I_FOGRANGE "[indexupper >> 2u][indexupper & 3u];\n");
+    out.Write("\tfloat k = lerp(klower, kupper, frac(floatindex));\n");
+    out.Write("\tfloat x_adjust = sqrt(offset * offset + k * k) / k;\n");
     out.Write("\tze *= x_adjust;\n");
   }
 
-  out.Write("\tfloat fog = clamp(ze - " I_FOGF "[1].z, 0.0, 1.0);\n");
+  out.Write("\tfloat fog = clamp(ze - " I_FOGF ".y, 0.0, 1.0);\n");
 
   if (uid_data->fog_fsel > 3)
   {
@@ -1298,8 +1377,19 @@ static void WriteFog(ShaderCode& out, const pixel_shader_uid_data* uid_data)
   out.Write("\tprev.rgb = (prev.rgb * (256 - ifog) + " I_FOGCOLOR ".rgb * ifog) >> 8;\n");
 }
 
-static void WriteColor(ShaderCode& out, const pixel_shader_uid_data* uid_data, bool use_dual_source)
+static void WriteColor(ShaderCode& out, APIType api_type, const pixel_shader_uid_data* uid_data,
+                       bool use_dual_source)
 {
+  // D3D requires that the shader outputs be uint when writing to a uint render target for logic op.
+  if (api_type == APIType::D3D && uid_data->uint_output)
+  {
+    if (uid_data->rgba6_format)
+      out.Write("\tocol0 = uint4(prev & 0xFC);\n");
+    else
+      out.Write("\tocol0 = uint4(prev);\n");
+    return;
+  }
+
   if (uid_data->rgba6_format)
     out.Write("\tocol0.rgb = float3(prev.rgb >> 2) / 63.0;\n");
   else
@@ -1307,24 +1397,95 @@ static void WriteColor(ShaderCode& out, const pixel_shader_uid_data* uid_data, b
 
   // Colors will be blended against the 8-bit alpha from ocol1 and
   // the 6-bit alpha from ocol0 will be written to the framebuffer
-  if (!uid_data->useDstAlpha)
-  {
-    out.Write("\tocol0.a = float(prev.a >> 2) / 63.0;\n");
-    if (use_dual_source)
-      out.Write("\tocol1.a = float(prev.a) / 255.0;\n");
-  }
-  else
+  if (uid_data->useDstAlpha)
   {
     out.SetConstantsUsed(C_ALPHA, C_ALPHA);
     out.Write("\tocol0.a = float(" I_ALPHA ".a >> 2) / 63.0;\n");
 
     // Use dual-source color blending to perform dst alpha in a single pass
     if (use_dual_source)
-    {
-      if (uid_data->useDstAlpha)
-        out.Write("\tocol1.a = float(prev.a) / 255.0;\n");
-      else
-        out.Write("\tocol1.a = float(" I_ALPHA ".a) / 255.0;\n");
-    }
+      out.Write("\tocol1.a = float(prev.a) / 255.0;\n");
   }
+  else
+  {
+    out.Write("\tocol0.a = float(prev.a >> 2) / 63.0;\n");
+    if (use_dual_source)
+      out.Write("\tocol1.a = float(prev.a) / 255.0;\n");
+  }
+}
+
+static void WriteBlend(ShaderCode& out, const pixel_shader_uid_data* uid_data)
+{
+  if (uid_data->blend_enable)
+  {
+    static const std::array<const char*, 8> blendSrcFactor{{
+        "float3(0,0,0);",                      // ZERO
+        "float3(1,1,1);",                      // ONE
+        "initial_ocol0.rgb;",                  // DSTCLR
+        "float3(1,1,1) - initial_ocol0.rgb;",  // INVDSTCLR
+        "ocol1.aaa;",                          // SRCALPHA
+        "float3(1,1,1) - ocol1.aaa;",          // INVSRCALPHA
+        "initial_ocol0.aaa;",                  // DSTALPHA
+        "float3(1,1,1) - initial_ocol0.aaa;",  // INVDSTALPHA
+    }};
+    static const std::array<const char*, 8> blendSrcFactorAlpha{{
+        "0.0;",                    // ZERO
+        "1.0;",                    // ONE
+        "initial_ocol0.a;",        // DSTCLR
+        "1.0 - initial_ocol0.a;",  // INVDSTCLR
+        "ocol1.a;",                // SRCALPHA
+        "1.0 - ocol1.a;",          // INVSRCALPHA
+        "initial_ocol0.a;",        // DSTALPHA
+        "1.0 - initial_ocol0.a;",  // INVDSTALPHA
+    }};
+    static const std::array<const char*, 8> blendDstFactor{{
+        "float3(0,0,0);",                      // ZERO
+        "float3(1,1,1);",                      // ONE
+        "ocol0.rgb;",                          // SRCCLR
+        "float3(1,1,1) - ocol0.rgb;",          // INVSRCCLR
+        "ocol1.aaa;",                          // SRCALHA
+        "float3(1,1,1) - ocol1.aaa;",          // INVSRCALPHA
+        "initial_ocol0.aaa;",                  // DSTALPHA
+        "float3(1,1,1) - initial_ocol0.aaa;",  // INVDSTALPHA
+    }};
+    static const std::array<const char*, 8> blendDstFactorAlpha{{
+        "0.0;",                    // ZERO
+        "1.0;",                    // ONE
+        "ocol0.a;",                // SRCCLR
+        "1.0 - ocol0.a;",          // INVSRCCLR
+        "ocol1.a;",                // SRCALPHA
+        "1.0 - ocol1.a;",          // INVSRCALPHA
+        "initial_ocol0.a;",        // DSTALPHA
+        "1.0 - initial_ocol0.a;",  // INVDSTALPHA
+    }};
+    out.Write("\tfloat4 blend_src;\n");
+    out.Write("\tblend_src.rgb = %s\n", blendSrcFactor[uid_data->blend_src_factor]);
+    out.Write("\tblend_src.a = %s\n", blendSrcFactorAlpha[uid_data->blend_src_factor_alpha]);
+    out.Write("\tfloat4 blend_dst;\n");
+    out.Write("\tblend_dst.rgb = %s\n", blendDstFactor[uid_data->blend_dst_factor]);
+    out.Write("\tblend_dst.a = %s\n", blendDstFactorAlpha[uid_data->blend_dst_factor_alpha]);
+
+    out.Write("\tfloat4 blend_result;\n");
+    if (uid_data->blend_subtract)
+    {
+      out.Write("\tblend_result.rgb = initial_ocol0.rgb * blend_dst.rgb - ocol0.rgb * "
+                "blend_src.rgb;\n");
+    }
+    else
+    {
+      out.Write(
+          "\tblend_result.rgb = initial_ocol0.rgb * blend_dst.rgb + ocol0.rgb * blend_src.rgb;\n");
+    }
+
+    if (uid_data->blend_subtract_alpha)
+      out.Write("\tblend_result.a = initial_ocol0.a * blend_dst.a - ocol0.a * blend_src.a;\n");
+    else
+      out.Write("\tblend_result.a = initial_ocol0.a * blend_dst.a + ocol0.a * blend_src.a;\n");
+  }
+  else
+  {
+    out.Write("\tfloat4 blend_result = ocol0;\n");
+  }
+
+  out.Write("\treal_ocol0 = blend_result;\n");
 }

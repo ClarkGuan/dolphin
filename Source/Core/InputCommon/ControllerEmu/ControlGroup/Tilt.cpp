@@ -6,7 +6,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 #include <memory>
 #include <string>
 
@@ -14,19 +13,18 @@
 #include "InputCommon/ControlReference/ControlReference.h"
 #include "InputCommon/ControllerEmu/Control/Control.h"
 #include "InputCommon/ControllerEmu/Control/Input.h"
+#include "InputCommon/ControllerEmu/Setting/NumericSetting.h"
 
 namespace ControllerEmu
 {
-Tilt::Tilt(const std::string& name_) : ControlGroup(name_, GROUP_TYPE_TILT)
+Tilt::Tilt(const std::string& name_) : ControlGroup(name_, GroupType::Tilt)
 {
-  memset(m_tilt, 0, sizeof(m_tilt));
+  controls.emplace_back(std::make_unique<Input>(Translate, _trans("Forward")));
+  controls.emplace_back(std::make_unique<Input>(Translate, _trans("Backward")));
+  controls.emplace_back(std::make_unique<Input>(Translate, _trans("Left")));
+  controls.emplace_back(std::make_unique<Input>(Translate, _trans("Right")));
 
-  controls.emplace_back(std::make_unique<Input>("Forward"));
-  controls.emplace_back(std::make_unique<Input>("Backward"));
-  controls.emplace_back(std::make_unique<Input>("Left"));
-  controls.emplace_back(std::make_unique<Input>("Right"));
-
-  controls.emplace_back(std::make_unique<Input>(_trans("Modifier")));
+  controls.emplace_back(std::make_unique<Input>(Translate, _trans("Modifier")));
 
   numeric_settings.emplace_back(std::make_unique<NumericSetting>(_trans("Dead Zone"), 0, 0, 50));
   numeric_settings.emplace_back(std::make_unique<NumericSetting>(_trans("Circle Stick"), 0));

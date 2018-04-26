@@ -2,7 +2,6 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
-#include <cmath>
 #include <cstring>
 
 #include "Common/Assert.h"
@@ -22,14 +21,11 @@ VertexShaderUid GetVertexShaderUid()
   vertex_shader_uid_data* uid_data = out.GetUidData<vertex_shader_uid_data>();
   memset(uid_data, 0, sizeof(*uid_data));
 
-  _assert_(bpmem.genMode.numtexgens == xfmem.numTexGen.numTexGens);
-  _assert_(bpmem.genMode.numcolchans == xfmem.numChan.numColorChans);
+  ASSERT(bpmem.genMode.numtexgens == xfmem.numTexGen.numTexGens);
+  ASSERT(bpmem.genMode.numcolchans == xfmem.numChan.numColorChans);
 
   uid_data->numTexGens = xfmem.numTexGen.numTexGens;
   uid_data->components = VertexLoaderManager::g_current_components;
-  uid_data->pixel_lighting = g_ActiveConfig.bEnablePixelLighting;
-  uid_data->msaa = g_ActiveConfig.iMultisamples > 1;
-  uid_data->ssaa = g_ActiveConfig.iMultisamples > 1 && g_ActiveConfig.bSSAA;
   uid_data->numColorChans = xfmem.numChan.numColorChans;
 
   GetLightingShaderUid(uid_data->lighting);
@@ -80,9 +76,16 @@ VertexShaderUid GetVertexShaderUid()
   return out;
 }
 
-ShaderCode GenerateVertexShaderCode(APIType api_type, const vertex_shader_uid_data* uid_data)
+ShaderCode GenerateVertexShaderCode(APIType api_type, const ShaderHostConfig& host_config,
+                                    const vertex_shader_uid_data* uid_data)
 {
   ShaderCode out;
+
+  const bool per_pixel_lighting = g_ActiveConfig.bEnablePixelLighting;
+  const bool msaa = host_config.msaa;
+  const bool ssaa = host_config.ssaa;
+  const bool vertex_rounding = host_config.vertex_rounding;
+
   out.Write("%s", s_lighting_struct);
 
   // uniforms
@@ -95,7 +98,7 @@ ShaderCode GenerateVertexShaderCode(APIType api_type, const vertex_shader_uid_da
   out.Write("};\n");
 
   out.Write("struct VS_OUTPUT {\n");
-  GenerateVSOutputMembers(out, api_type, uid_data->numTexGens, uid_data->pixel_lighting, "");
+  GenerateVSOutputMembers(out, api_type, uid_data->numTexGens, per_pixel_lighting, "");
   out.Write("};\n");
 
   if (api_type == APIType::OpenGL || api_type == APIType::Vulkan)
@@ -111,27 +114,26 @@ ShaderCode GenerateVertexShaderCode(APIType api_type, const vertex_shader_uid_da
       out.Write("ATTRIBUTE_LOCATION(%d) in float3 rawnorm2;\n", SHADER_NORM2_ATTRIB);
 
     if (uid_data->components & VB_HAS_COL0)
-      out.Write("ATTRIBUTE_LOCATION(%d) in float4 color0;\n", SHADER_COLOR0_ATTRIB);
+      out.Write("ATTRIBUTE_LOCATION(%d) in float4 rawcolor0;\n", SHADER_COLOR0_ATTRIB);
     if (uid_data->components & VB_HAS_COL1)
-      out.Write("ATTRIBUTE_LOCATION(%d) in float4 color1;\n", SHADER_COLOR1_ATTRIB);
+      out.Write("ATTRIBUTE_LOCATION(%d) in float4 rawcolor1;\n", SHADER_COLOR1_ATTRIB);
 
     for (int i = 0; i < 8; ++i)
     {
       u32 hastexmtx = (uid_data->components & (VB_HAS_TEXMTXIDX0 << i));
       if ((uid_data->components & (VB_HAS_UV0 << i)) || hastexmtx)
       {
-        out.Write("ATTRIBUTE_LOCATION(%d) in float%d tex%d;\n", SHADER_TEXTURE0_ATTRIB + i,
+        out.Write("ATTRIBUTE_LOCATION(%d) in float%d rawtex%d;\n", SHADER_TEXTURE0_ATTRIB + i,
                   hastexmtx ? 3 : 2, i);
       }
     }
 
     // We need to always use output blocks for Vulkan, but geometry shaders are also optional.
-    if (g_ActiveConfig.backend_info.bSupportsGeometryShaders || api_type == APIType::Vulkan)
+    if (host_config.backend_geometry_shaders || api_type == APIType::Vulkan)
     {
       out.Write("VARYING_LOCATION(0) out VertexData {\n");
-      GenerateVSOutputMembers(
-          out, api_type, uid_data->numTexGens, uid_data->pixel_lighting,
-          GetInterpolationQualifier(uid_data->msaa, uid_data->ssaa, true, false));
+      GenerateVSOutputMembers(out, api_type, uid_data->numTexGens, per_pixel_lighting,
+                              GetInterpolationQualifier(msaa, ssaa, true, false));
       out.Write("} vs;\n");
     }
     else
@@ -141,23 +143,17 @@ ShaderCode GenerateVertexShaderCode(APIType api_type, const vertex_shader_uid_da
       {
         if (i < uid_data->numTexGens)
         {
-          out.Write("%s out float3 uv%u;\n",
-                    GetInterpolationQualifier(uid_data->msaa, uid_data->ssaa), i);
+          out.Write("%s out float3 tex%u;\n", GetInterpolationQualifier(msaa, ssaa), i);
         }
       }
-      out.Write("%s out float4 clipPos;\n",
-                GetInterpolationQualifier(uid_data->msaa, uid_data->ssaa));
-      if (uid_data->pixel_lighting)
+      out.Write("%s out float4 clipPos;\n", GetInterpolationQualifier(msaa, ssaa));
+      if (per_pixel_lighting)
       {
-        out.Write("%s out float3 Normal;\n",
-                  GetInterpolationQualifier(uid_data->msaa, uid_data->ssaa));
-        out.Write("%s out float3 WorldPos;\n",
-                  GetInterpolationQualifier(uid_data->msaa, uid_data->ssaa));
+        out.Write("%s out float3 Normal;\n", GetInterpolationQualifier(msaa, ssaa));
+        out.Write("%s out float3 WorldPos;\n", GetInterpolationQualifier(msaa, ssaa));
       }
-      out.Write("%s out float4 colors_0;\n",
-                GetInterpolationQualifier(uid_data->msaa, uid_data->ssaa));
-      out.Write("%s out float4 colors_1;\n",
-                GetInterpolationQualifier(uid_data->msaa, uid_data->ssaa));
+      out.Write("%s out float4 colors_0;\n", GetInterpolationQualifier(msaa, ssaa));
+      out.Write("%s out float4 colors_1;\n", GetInterpolationQualifier(msaa, ssaa));
     }
 
     out.Write("void main()\n{\n");
@@ -174,14 +170,14 @@ ShaderCode GenerateVertexShaderCode(APIType api_type, const vertex_shader_uid_da
     if (uid_data->components & VB_HAS_NRM2)
       out.Write("  float3 rawnorm2 : NORMAL2,\n");
     if (uid_data->components & VB_HAS_COL0)
-      out.Write("  float4 color0 : COLOR0,\n");
+      out.Write("  float4 rawcolor0 : COLOR0,\n");
     if (uid_data->components & VB_HAS_COL1)
-      out.Write("  float4 color1 : COLOR1,\n");
+      out.Write("  float4 rawcolor1 : COLOR1,\n");
     for (int i = 0; i < 8; ++i)
     {
       u32 hastexmtx = (uid_data->components & (VB_HAS_TEXMTXIDX0 << i));
       if ((uid_data->components & (VB_HAS_UV0 << i)) || hastexmtx)
-        out.Write("  float%d tex%d : TEXCOORD%d,\n", hastexmtx ? 3 : 2, i, i);
+        out.Write("  float%d rawtex%d : TEXCOORD%d,\n", hastexmtx ? 3 : 2, i, i);
     }
     if (uid_data->components & VB_HAS_POSMTXIDX)
       out.Write("  uint4 posmtx : BLENDINDICES,\n");
@@ -243,24 +239,8 @@ ShaderCode GenerateVertexShaderCode(APIType api_type, const vertex_shader_uid_da
             "float3 ldir, h, cosAttn, distAttn;\n"
             "float dist, dist2, attn;\n");
 
-  if (uid_data->numColorChans == 0)
-  {
-    if (uid_data->components & VB_HAS_COL0)
-      out.Write("o.colors_0 = color0;\n");
-    else
-      out.Write("o.colors_0 = float4(1.0, 1.0, 1.0, 1.0);\n");
-  }
-
-  GenerateLightingShaderCode(out, uid_data->lighting, uid_data->components, uid_data->numColorChans,
-                             "color", "o.colors_");
-
-  if (uid_data->numColorChans < 2)
-  {
-    if (uid_data->components & VB_HAS_COL1)
-      out.Write("o.colors_1 = color1;\n");
-    else
-      out.Write("o.colors_1 = o.colors_0;\n");
-  }
+  GenerateLightingShaderCode(out, uid_data->lighting, uid_data->components, "rawcolor",
+                             "o.colors_");
 
   // transform texcoords
   out.Write("float4 coord = float4(0.0, 0.0, 1.0, 1.0);\n");
@@ -282,8 +262,8 @@ ShaderCode GenerateVertexShaderCode(APIType api_type, const vertex_shader_uid_da
       }
       break;
     case XF_SRCCOLORS_INROW:
-      _assert_(texinfo.texgentype == XF_TEXGEN_COLOR_STRGBC0 ||
-               texinfo.texgentype == XF_TEXGEN_COLOR_STRGBC1);
+      ASSERT(texinfo.texgentype == XF_TEXGEN_COLOR_STRGBC0 ||
+             texinfo.texgentype == XF_TEXGEN_COLOR_STRGBC1);
       break;
     case XF_SRCBINORMAL_T_INROW:
       if (uid_data->components & VB_HAS_NRM1)
@@ -298,9 +278,9 @@ ShaderCode GenerateVertexShaderCode(APIType api_type, const vertex_shader_uid_da
       }
       break;
     default:
-      _assert_(texinfo.sourcerow <= XF_SRCTEX7_INROW);
+      ASSERT(texinfo.sourcerow <= XF_SRCTEX7_INROW);
       if (uid_data->components & (VB_HAS_UV0 << (texinfo.sourcerow - XF_SRCTEX0_INROW)))
-        out.Write("coord = float4(tex%d.x, tex%d.y, 1.0, 1.0);\n",
+        out.Write("coord = float4(rawtex%d.x, rawtex%d.y, 1.0, 1.0);\n",
                   texinfo.sourcerow - XF_SRCTEX0_INROW, texinfo.sourcerow - XF_SRCTEX0_INROW);
       break;
     }
@@ -327,7 +307,7 @@ ShaderCode GenerateVertexShaderCode(APIType api_type, const vertex_shader_uid_da
       {
         // The following assert was triggered in House of the Dead Overkill and Star Wars Rogue
         // Squadron 2
-        //_assert_(0); // should have normals
+        // ASSERT(0); // should have normals
         out.Write("o.tex%d.xyz = o.tex%d.xyz;\n", i, texinfo.embosssourceshift);
       }
 
@@ -342,7 +322,7 @@ ShaderCode GenerateVertexShaderCode(APIType api_type, const vertex_shader_uid_da
     default:
       if (uid_data->components & (VB_HAS_TEXMTXIDX0 << i))
       {
-        out.Write("int tmp = int(tex%d.z);\n", i);
+        out.Write("int tmp = int(rawtex%d.z);\n", i);
         if (((uid_data->texMtxInfo_n_projection >> i) & 1) == XF_TEXPROJ_STQ)
           out.Write("o.tex%d.xyz = float3(dot(coord, " I_TRANSFORMMATRICES
                     "[tmp]), dot(coord, " I_TRANSFORMMATRICES
@@ -402,25 +382,40 @@ ShaderCode GenerateVertexShaderCode(APIType api_type, const vertex_shader_uid_da
     out.Write("}\n");
   }
 
+  if (uid_data->numColorChans == 0)
+  {
+    if (uid_data->components & VB_HAS_COL0)
+      out.Write("o.colors_0 = rawcolor0;\n");
+    else
+      out.Write("o.colors_0 = float4(1.0, 1.0, 1.0, 1.0);\n");
+  }
+  if (uid_data->numColorChans < 2)
+  {
+    if (uid_data->components & VB_HAS_COL1)
+      out.Write("o.colors_1 = rawcolor1;\n");
+    else
+      out.Write("o.colors_1 = o.colors_0;\n");
+  }
+
   // clipPos/w needs to be done in pixel shader, not here
   out.Write("o.clipPos = o.pos;\n");
 
-  if (uid_data->pixel_lighting)
+  if (per_pixel_lighting)
   {
     out.Write("o.Normal = _norm0;\n");
     out.Write("o.WorldPos = pos.xyz;\n");
 
     if (uid_data->components & VB_HAS_COL0)
-      out.Write("o.colors_0 = color0;\n");
+      out.Write("o.colors_0 = rawcolor0;\n");
 
     if (uid_data->components & VB_HAS_COL1)
-      out.Write("o.colors_1 = color1;\n");
+      out.Write("o.colors_1 = rawcolor1;\n");
   }
 
   // If we can disable the incorrect depth clipping planes using depth clamping, then we can do
   // our own depth clipping and calculate the depth range before the perspective divide if
   // necessary.
-  if (g_ActiveConfig.backend_info.bSupportsDepthClamp)
+  if (host_config.backend_depth_clamp)
   {
     // Since we're adjusting z for the depth range before the perspective divide, we have to do our
     // own clipping. We want to clip so that -w <= z <= 0, which matches the console -1..0 range.
@@ -445,13 +440,17 @@ ShaderCode GenerateVertexShaderCode(APIType api_type, const vertex_shader_uid_da
   out.Write("o.pos.z = o.pos.w * " I_PIXELCENTERCORRECTION ".w - "
             "o.pos.z * " I_PIXELCENTERCORRECTION ".z;\n");
 
-  if (!g_ActiveConfig.backend_info.bSupportsClipControl)
+  if (!host_config.backend_clip_control)
   {
     // If the graphics API doesn't support a depth range of 0..1, then we need to map z to
     // the -1..1 range. Unfortunately we have to use a substraction, which is a lossy floating-point
     // operation that can introduce a round-trip error.
     out.Write("o.pos.z = o.pos.z * 2.0 - o.pos.w;\n");
   }
+
+  // Correct for negative viewports by mirroring all vertices. We need to negate the height here,
+  // since the viewport height is already negated by the render backend.
+  out.Write("o.pos.xy *= sign(" I_PIXELCENTERCORRECTION ".xy * float2(1.0, -1.0));\n");
 
   // The console GPU places the pixel center at 7/12 in screen space unless
   // antialiasing is enabled, while D3D and OpenGL place it at 0.5. This results
@@ -461,20 +460,43 @@ ShaderCode GenerateVertexShaderCode(APIType api_type, const vertex_shader_uid_da
   // get rasterized correctly.
   out.Write("o.pos.xy = o.pos.xy - o.pos.w * " I_PIXELCENTERCORRECTION ".xy;\n");
 
+  if (vertex_rounding)
+  {
+    // By now our position is in clip space
+    // however, higher resolutions than the Wii outputs
+    // cause an additional pixel offset
+    // due to a higher pixel density
+    // we need to correct this by converting our
+    // clip-space position into the Wii's screen-space
+    // acquire the right pixel and then convert it back
+    out.Write("if (o.pos.w == 1.0f)\n");
+    out.Write("{\n");
+
+    out.Write("\tfloat ss_pixel_x = ((o.pos.x + 1.0f) * (" I_VIEWPORT_SIZE ".x * 0.5f));\n");
+    out.Write("\tfloat ss_pixel_y = ((o.pos.y + 1.0f) * (" I_VIEWPORT_SIZE ".y * 0.5f));\n");
+
+    out.Write("\tss_pixel_x = round(ss_pixel_x);\n");
+    out.Write("\tss_pixel_y = round(ss_pixel_y);\n");
+
+    out.Write("\to.pos.x = ((ss_pixel_x / (" I_VIEWPORT_SIZE ".x * 0.5f)) - 1.0f);\n");
+    out.Write("\to.pos.y = ((ss_pixel_y / (" I_VIEWPORT_SIZE ".y * 0.5f)) - 1.0f);\n");
+    out.Write("}\n");
+  }
+
   if (api_type == APIType::OpenGL || api_type == APIType::Vulkan)
   {
-    if (g_ActiveConfig.backend_info.bSupportsGeometryShaders || api_type == APIType::Vulkan)
+    if (host_config.backend_geometry_shaders || api_type == APIType::Vulkan)
     {
-      AssignVSOutputMembers(out, "vs", "o", uid_data->numTexGens, uid_data->pixel_lighting);
+      AssignVSOutputMembers(out, "vs", "o", uid_data->numTexGens, per_pixel_lighting);
     }
     else
     {
       // TODO: Pass interface blocks between shader stages even if geometry shaders
       // are not supported, however that will require at least OpenGL 3.2 support.
       for (unsigned int i = 0; i < uid_data->numTexGens; ++i)
-        out.Write("uv%d.xyz = o.tex%d;\n", i, i);
+        out.Write("tex%d.xyz = o.tex%d;\n", i, i);
       out.Write("clipPos = o.clipPos;\n");
-      if (uid_data->pixel_lighting)
+      if (per_pixel_lighting)
       {
         out.Write("Normal = o.Normal;\n");
         out.Write("WorldPos = o.WorldPos;\n");
@@ -483,7 +505,7 @@ ShaderCode GenerateVertexShaderCode(APIType api_type, const vertex_shader_uid_da
       out.Write("colors_1 = o.colors_1;\n");
     }
 
-    if (g_ActiveConfig.backend_info.bSupportsDepthClamp)
+    if (host_config.backend_depth_clamp)
     {
       out.Write("gl_ClipDistance[0] = o.clipDist0;\n");
       out.Write("gl_ClipDistance[1] = o.clipDist1;\n");

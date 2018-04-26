@@ -7,11 +7,10 @@
 #include "Core/HW/DSPHLE/UCodes/AXWii.h"
 
 #include "Common/ChunkFile.h"
-#include "Common/CommonFuncs.h"
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
 #include "Common/MathUtil.h"
-#include "Common/StringUtil.h"
+#include "Common/Swap.h"
 #include "Core/HW/DSPHLE/DSPHLE.h"
 #include "Core/HW/DSPHLE/MailHandler.h"
 #include "Core/HW/DSPHLE/UCodes/AXStructs.h"
@@ -60,8 +59,8 @@ void AXWiiUCode::HandleCommandList()
     {
       switch (cmd)
       {
-      // Some of these commands are unknown, or unused in this AX HLE.
-      // We still need to skip their arguments using "curr_idx += N".
+        // Some of these commands are unknown, or unused in this AX HLE.
+        // We still need to skip their arguments using "curr_idx += N".
 
       case CMD_SETUP_OLD:
         addr_hi = m_cmdlist[curr_idx++];
@@ -157,8 +156,8 @@ void AXWiiUCode::HandleCommandList()
     {
       switch (cmd)
       {
-      // Some of these commands are unknown, or unused in this AX HLE.
-      // We still need to skip their arguments using "curr_idx += N".
+        // Some of these commands are unknown, or unused in this AX HLE.
+        // We still need to skip their arguments using "curr_idx += N".
 
       case CMD_SETUP:
         addr_hi = m_cmdlist[curr_idx++];
@@ -452,7 +451,7 @@ void AXWiiUCode::ProcessPBList(u32 pb_addr)
                           m_samples_aux1,      m_samples_wm2,        m_samples_aux2,
                           m_samples_wm3,       m_samples_aux3}};
 
-    ReadPB(pb_addr, pb);
+    ReadPB(pb_addr, pb, m_crc);
 
     u16 num_updates[3];
     u16 updates[1024];
@@ -477,7 +476,7 @@ void AXWiiUCode::ProcessPBList(u32 pb_addr)
                    m_coeffs_available ? m_coeffs : nullptr);
     }
 
-    WritePB(pb_addr, pb);
+    WritePB(pb_addr, pb, m_crc);
     pb_addr = HILO_TO_32(pb.next_pb);
   }
 }

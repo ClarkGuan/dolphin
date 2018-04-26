@@ -10,9 +10,9 @@
 #include <string>
 
 #include "Common/CommonTypes.h"
-#include "Common/FileUtil.h"
+#include "Common/File.h"
 #include "Core/IOS/Device.h"
-#include "Core/IOS/IPC.h"
+#include "Core/IOS/IOS.h"
 
 class PointerWrap;
 
@@ -22,15 +22,16 @@ namespace HLE
 {
 namespace Device
 {
+// The front SD slot
 class SDIOSlot0 : public Device
 {
 public:
-  SDIOSlot0(u32 device_id, const std::string& device_name);
+  SDIOSlot0(Kernel& ios, const std::string& device_name);
 
   void DoState(PointerWrap& p) override;
 
-  ReturnCode Open(const OpenRequest& request) override;
-  void Close() override;
+  IPCCommandResult Open(const OpenRequest& request) override;
+  IPCCommandResult Close(u32 fd) override;
   IPCCommandResult IOCtl(const IOCtlRequest& request) override;
   IPCCommandResult IOCtlV(const IOCtlVRequest& request) override;
 
@@ -76,6 +77,7 @@ private:
     CARD_NOT_EXIST = 0,
     CARD_INSERTED = 1,
     CARD_INITIALIZED = 0x10000,
+    CARD_SDHC = 0x100000,
   };
 
   // Commands
@@ -110,26 +112,62 @@ private:
     EVENT_INVALID = 0xc210000
   };
 
-  // TODO do we need more than one?
+  enum class SDProtocol
+  {
+    V1,
+    V2,
+  };
+
+  // Maximum number of bytes in an SDSC card
+  // Used to trigger using SDHC instead of SDSC
+  static constexpr u64 SDSC_MAX_SIZE = 0x80000000;
+
   struct Event
   {
     Event(EventType type_, Request request_) : type(type_), request(request_) {}
     EventType type;
     Request request;
   };
+
+  IPCCommandResult WriteHCRegister(const IOCtlRequest& request);
+  IPCCommandResult ReadHCRegister(const IOCtlRequest& request);
+  IPCCommandResult ResetCard(const IOCtlRequest& request);
+  IPCCommandResult SetClk(const IOCtlRequest& request);
+  IPCCommandResult SendCommand(const IOCtlRequest& request);
+  IPCCommandResult GetStatus(const IOCtlRequest& request);
+  IPCCommandResult GetOCRegister(const IOCtlRequest& request);
+
+  IPCCommandResult SendCommand(const IOCtlVRequest& request);
+
+  s32 ExecuteCommand(const Request& request, u32 BufferIn, u32 BufferInSize, u32 BufferIn2,
+                     u32 BufferInSize2, u32 _BufferOut, u32 BufferOutSize);
+  void OpenInternal();
+  void InitStatus();
+
+  u32 GetOCRegister() const;
+
+  std::array<u32, 4> GetCSDv1() const;
+  std::array<u32, 4> GetCSDv2() const;
+  void InitSDHC();
+
+  u64 GetAddressFromRequest(u32 arg) const;
+
+  // TODO: do we need more than one?
   std::unique_ptr<Event> m_event;
 
-  u32 m_Status = CARD_NOT_EXIST;
-  u32 m_BlockLength = 0;
-  u32 m_BusWidth = 0;
+  u32 m_status = CARD_NOT_EXIST;
+  SDProtocol m_protocol = SDProtocol::V1;
+
+  // Is SDHC supported by the IOS?
+  // Other IOS requires manual SDHC initialization
+  const bool m_sdhc_supported;
+
+  u32 m_block_length = 0;
+  u32 m_bus_width = 0;
 
   std::array<u32, 0x200 / sizeof(u32)> m_registers;
 
-  File::IOFile m_Card;
-
-  u32 ExecuteCommand(const Request& request, u32 BufferIn, u32 BufferInSize, u32 BufferIn2,
-                     u32 BufferInSize2, u32 _BufferOut, u32 BufferOutSize);
-  void OpenInternal();
+  File::IOFile m_card;
 };
 }  // namespace Device
 }  // namespace HLE

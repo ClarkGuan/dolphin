@@ -14,25 +14,34 @@ struct XFBSourceBase;
 
 namespace OGL
 {
+class OGLPipeline;
 void ClearEFBCache();
 
-enum GLSL_VERSION
+enum GlslVersion
 {
-  GLSL_130,
-  GLSL_140,
-  GLSL_150,
-  GLSL_330,
-  GLSL_400,    // and above
-  GLSLES_300,  // GLES 3.0
-  GLSLES_310,  // GLES 3.1
-  GLSLES_320,  // GLES 3.2
+  Glsl130,
+  Glsl140,
+  Glsl150,
+  Glsl330,
+  Glsl400,  // and above
+  Glsl430,
+  GlslEs300,  // GLES 3.0
+  GlslEs310,  // GLES 3.1
+  GlslEs320,  // GLES 3.2
 };
-enum class ES_TEXBUF_TYPE
+enum class EsTexbufType
 {
-  TEXBUF_NONE,
-  TEXBUF_CORE,
-  TEXBUF_OES,
-  TEXBUF_EXT
+  TexbufNone,
+  TexbufCore,
+  TexbufOes,
+  TexbufExt
+};
+
+enum class EsFbFetchType
+{
+  FbFetchNone,
+  FbFetchExt,
+  FbFetchArm,
 };
 
 // ogl-only config, so not in VideoConfig.h
@@ -44,18 +53,22 @@ struct VideoConfig
   bool bSupportsGLBaseVertex;
   bool bSupportsGLBufferStorage;
   bool bSupportsMSAA;
-  GLSL_VERSION eSupportedGLSLVersion;
+  GlslVersion eSupportedGLSLVersion;
   bool bSupportViewportFloat;
   bool bSupportsAEP;
   bool bSupportsDebug;
   bool bSupportsCopySubImage;
   u8 SupportedESPointSize;
-  ES_TEXBUF_TYPE SupportedESTextureBuffer;
-  bool bSupports2DTextureStorage;
-  bool bSupports3DTextureStorage;
-  bool bSupportsEarlyFragmentTests;
+  EsTexbufType SupportedESTextureBuffer;
+  bool bSupportsTextureStorage;
+  bool bSupports2DTextureStorageMultisample;
+  bool bSupports3DTextureStorageMultisample;
   bool bSupportsConservativeDepth;
+  bool bSupportsImageLoadStore;
   bool bSupportsAniso;
+  bool bSupportsBitfield;
+  bool bSupportsTextureSubImage;
+  EsFbFetchType SupportedFramebufferFetch;
 
   const char* gl_vendor;
   const char* gl_renderer;
@@ -69,18 +82,36 @@ class Renderer : public ::Renderer
 {
 public:
   Renderer();
-  ~Renderer();
+  ~Renderer() override;
 
-  static void Init();
-  static void Shutdown();
+  void Init();
+  void Shutdown() override;
 
-  void SetBlendMode(bool forceUpdate) override;
-  void SetScissorRect(const EFBRectangle& rc) override;
-  void SetGenerationMode() override;
-  void SetDepthMode() override;
-  void SetSamplerState(int stage, int texindex, bool custom_tex) override;
+  std::unique_ptr<AbstractTexture> CreateTexture(const TextureConfig& config) override;
+  std::unique_ptr<AbstractStagingTexture>
+  CreateStagingTexture(StagingTextureType type, const TextureConfig& config) override;
+  std::unique_ptr<AbstractShader> CreateShaderFromSource(ShaderStage stage, const char* source,
+                                                         size_t length) override;
+  std::unique_ptr<AbstractShader> CreateShaderFromBinary(ShaderStage stage, const void* data,
+                                                         size_t length) override;
+  std::unique_ptr<AbstractPipeline> CreatePipeline(const AbstractPipelineConfig& config) override;
+  std::unique_ptr<AbstractFramebuffer>
+  CreateFramebuffer(const AbstractTexture* color_attachment,
+                    const AbstractTexture* depth_attachment) override;
+
+  void SetPipeline(const AbstractPipeline* pipeline) override;
+  void SetFramebuffer(const AbstractFramebuffer* framebuffer) override;
+  void SetAndDiscardFramebuffer(const AbstractFramebuffer* framebuffer) override;
+  void SetAndClearFramebuffer(const AbstractFramebuffer* framebuffer,
+                              const ClearColor& color_value = {},
+                              float depth_value = 0.0f) override;
+  void SetScissorRect(const MathUtil::Rectangle<int>& rc) override;
+  void SetTexture(u32 index, const AbstractTexture* texture) override;
+  void SetSamplerState(u32 index, const SamplerState& state) override;
+  void UnbindTexture(const AbstractTexture* texture) override;
   void SetInterlacingMode() override;
-  void SetViewport() override;
+  void SetViewport(float x, float y, float width, float height, float near_depth,
+                   float far_depth) override;
 
   void RenderText(const std::string& text, int left, int top, u32 color) override;
 
@@ -95,58 +126,43 @@ public:
 
   TargetRectangle ConvertEFBRectangle(const EFBRectangle& rc) override;
 
-  void SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight, const EFBRectangle& rc,
-                u64 ticks, float Gamma) override;
+  void SwapImpl(AbstractTexture* texture, const EFBRectangle& rc, u64 ticks, float Gamma) override;
 
   void ClearScreen(const EFBRectangle& rc, bool colorEnable, bool alphaEnable, bool zEnable,
                    u32 color, u32 z) override;
 
   void ReinterpretPixelData(unsigned int convtype) override;
 
-  u32 GetMaxTextureSize() override;
+  void DrawUtilityPipeline(const void* uniforms, u32 uniforms_size, const void* vertices,
+                           u32 vertex_stride, u32 num_vertices) override;
 
-  void ChangeSurface(void* new_surface_handle) override;
+  void DispatchComputeShader(const AbstractShader* shader, const void* uniforms, u32 uniforms_size,
+                             u32 groups_x, u32 groups_y, u32 groups_z) override;
+
+  std::unique_ptr<VideoCommon::AsyncShaderCompiler> CreateAsyncShaderCompiler() override;
 
 private:
   void UpdateEFBCache(EFBAccessType type, u32 cacheRectIdx, const EFBRectangle& efbPixelRc,
                       const TargetRectangle& targetPixelRc, const void* data);
 
-  // Draw either the EFB, or specified XFB sources to the currently-bound framebuffer.
-  void DrawFrame(GLuint framebuffer, const TargetRectangle& target_rc,
-                 const EFBRectangle& source_rc, u32 xfb_addr,
-                 const XFBSourceBase* const* xfb_sources, u32 xfb_count, u32 fb_width,
-                 u32 fb_stride, u32 fb_height);
-  void DrawEFB(GLuint framebuffer, const TargetRectangle& target_rc, const EFBRectangle& source_rc);
-  void DrawVirtualXFB(GLuint framebuffer, const TargetRectangle& target_rc, u32 xfb_addr,
-                      const XFBSourceBase* const* xfb_sources, u32 xfb_count, u32 fb_width,
-                      u32 fb_stride, u32 fb_height);
-  void DrawRealXFB(GLuint framebuffer, const TargetRectangle& target_rc,
-                   const XFBSourceBase* const* xfb_sources, u32 xfb_count, u32 fb_width,
-                   u32 fb_stride, u32 fb_height);
+  void DrawEFB(GLuint framebuffer, const TargetRectangle& target_rc,
+               const TargetRectangle& source_rc);
 
   void BlitScreen(TargetRectangle src, TargetRectangle dst, GLuint src_texture, int src_width,
                   int src_height);
 
-  void FlushFrameDump();
-  void DumpFrame(const TargetRectangle& flipped_trc, u64 ticks);
-  void DumpFrameUsingFBO(const EFBRectangle& source_rc, u32 xfb_addr,
-                         const XFBSourceBase* const* xfb_sources, u32 xfb_count, u32 fb_width,
-                         u32 fb_stride, u32 fb_height, u64 ticks);
+  void CheckForSurfaceChange();
+  void CheckForSurfaceResize();
 
-  // Frame dumping framebuffer, we render to this, then read it back
-  void PrepareFrameDumpRenderTexture(u32 width, u32 height);
-  void DestroyFrameDumpResources();
-  GLuint m_frame_dump_render_texture = 0;
-  GLuint m_frame_dump_render_framebuffer = 0;
-  u32 m_frame_dump_render_texture_width = 0;
-  u32 m_frame_dump_render_texture_height = 0;
+  void ApplyBlendingState(const BlendingState state, bool force = false);
+  void ApplyRasterizationState(const RasterizationState state, bool force = false);
+  void ApplyDepthState(const DepthState state, bool force = false);
+  void UploadUtilityUniforms(const void* uniforms, u32 uniforms_size);
 
-  // avi dumping state to delay one frame
-  std::array<u32, 2> m_frame_dumping_pbo = {};
-  std::array<bool, 2> m_frame_pbo_is_mapped = {};
-  std::array<int, 2> m_last_frame_width = {};
-  std::array<int, 2> m_last_frame_height = {};
-  bool m_last_frame_exported = false;
-  AVIDump::Frame m_last_frame_state;
+  std::array<const AbstractTexture*, 8> m_bound_textures{};
+  const OGLPipeline* m_graphics_pipeline = nullptr;
+  RasterizationState m_current_rasterization_state = {};
+  DepthState m_current_depth_state = {};
+  BlendingState m_current_blend_state = {};
 };
 }

@@ -2,6 +2,7 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include <cinttypes>
 #include <string>
 
 #include "Common/BitSet.h"
@@ -9,6 +10,7 @@
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
 #include "Common/StringUtil.h"
+#include "Common/Swap.h"
 
 #include "Core/HW/Memmap.h"
 #include "Core/PowerPC/JitArm64/Jit.h"
@@ -37,7 +39,7 @@ void JitArm64::DoBacktrace(uintptr_t access_address, SContext* ctx)
                                   Common::swap32(*(u32*)(pc + 4)), Common::swap32(*(u32*)(pc + 8)),
                                   Common::swap32(*(u32*)(pc + 12)));
 
-    ERROR_LOG(DYNA_REC, "0x%016lx: %08x %08x %08x %08x", pc, *(u32*)pc, *(u32*)(pc + 4),
+    ERROR_LOG(DYNA_REC, "0x%016" PRIx64 ": %08x %08x %08x %08x", pc, *(u32*)pc, *(u32*)(pc + 4),
               *(u32*)(pc + 8), *(u32*)(pc + 12));
   }
 
@@ -194,14 +196,14 @@ void JitArm64::EmitBackpatchRoutine(u32 flags, bool fastmem, bool do_farcode, AR
       {
         m_float_emit.FCVTN(32, D0, RS);
         m_float_emit.UMOV(64, X0, D0, 0);
-        ORR(X0, SP, X0, ArithOption(X0, ST_ROR, 32));
+        ROR(X0, X0, 32);
         MOVP2R(X30, &PowerPC::Write_U64);
         BLR(X30);
       }
       else if (flags & BackPatchInfo::FLAG_SIZE_F32X2I)
       {
         m_float_emit.UMOV(64, X0, RS, 0);
-        ORR(X0, SP, X0, ArithOption(X0, ST_ROR, 32));
+        ROR(X0, X0, 32);
         MOVP2R(X30, &PowerPC::Write_U64);
         BLR(X30);
       }

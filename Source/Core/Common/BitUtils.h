@@ -99,4 +99,70 @@ constexpr Result ExtractBits(const T src) noexcept
 
   return ExtractBits<T, Result>(src, begin, end);
 }
+
+///
+/// Rotates a value left (ROL).
+///
+/// @param  value  The value to rotate.
+/// @param  amount The number of bits to rotate the value.
+/// @tparam T      An unsigned type.
+///
+/// @return The rotated value.
+///
+template <typename T>
+constexpr T RotateLeft(const T value, size_t amount) noexcept
+{
+  static_assert(std::is_unsigned<T>(), "Can only rotate unsigned types left.");
+
+  amount %= BitSize<T>();
+
+  if (amount == 0)
+    return value;
+
+  return static_cast<T>((value << amount) | (value >> (BitSize<T>() - amount)));
+}
+
+///
+/// Rotates a value right (ROR).
+///
+/// @param  value  The value to rotate.
+/// @param  amount The number of bits to rotate the value.
+/// @tparam T      An unsigned type.
+///
+/// @return The rotated value.
+///
+template <typename T>
+constexpr T RotateRight(const T value, size_t amount) noexcept
+{
+  static_assert(std::is_unsigned<T>(), "Can only rotate unsigned types right.");
+
+  amount %= BitSize<T>();
+
+  if (amount == 0)
+    return value;
+
+  return static_cast<T>((value >> amount) | (value << (BitSize<T>() - amount)));
+}
+
+///
+/// Verifies whether the supplied value is a valid bit mask of the form 0b00...0011...11.
+/// Both edge cases of all zeros and all ones are considered valid masks, too.
+///
+/// @param  mask The mask value to test for validity.
+///
+/// @tparam T    The type of the value.
+///
+/// @return A bool indicating whether the mask is valid.
+///
+template <typename T>
+constexpr bool IsValidLowMask(const T mask) noexcept
+{
+  static_assert(std::is_integral<T>::value, "Mask must be an integral type.");
+  static_assert(std::is_unsigned<T>::value, "Signed masks can introduce hard to find bugs.");
+
+  // Can be efficiently determined without looping or bit counting. It's the counterpart
+  // to https://graphics.stanford.edu/~seander/bithacks.html#DetermineIfPowerOf2
+  // and doesn't require special casing either edge case.
+  return (mask & (mask + 1)) == 0;
+}
 }  // namespace Common

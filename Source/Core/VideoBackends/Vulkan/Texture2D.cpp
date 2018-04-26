@@ -4,6 +4,7 @@
 
 #include <algorithm>
 
+#include "Common/Assert.h"
 #include "VideoBackends/Vulkan/CommandBufferManager.h"
 #include "VideoBackends/Vulkan/Texture2D.h"
 #include "VideoBackends/Vulkan/VulkanContext.h"
@@ -201,7 +202,8 @@ void Texture2D::TransitionToLayout(VkCommandBuffer command_buffer, VkImageLayout
     // Image was being used as a depthstencil attachment, so ensure all writes have completed.
     barrier.srcAccessMask =
         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    srcStageMask =
+        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
     break;
 
   case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
@@ -237,19 +239,19 @@ void Texture2D::TransitionToLayout(VkCommandBuffer command_buffer, VkImageLayout
   case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
     barrier.dstAccessMask =
         VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    dstStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     break;
 
   case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
     barrier.dstAccessMask =
         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    dstStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    dstStageMask =
+        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
     break;
 
   case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
-    // TODO: Can we use FRAGMENT_SHADER here? We don't sample textures in the earlier stages.
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    dstStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     break;
 
   case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
@@ -263,7 +265,6 @@ void Texture2D::TransitionToLayout(VkCommandBuffer command_buffer, VkImageLayout
     break;
 
   case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
-    barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
     srcStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
     dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
     break;
@@ -273,10 +274,133 @@ void Texture2D::TransitionToLayout(VkCommandBuffer command_buffer, VkImageLayout
     break;
   }
 
+  // If we were using a compute layout, the stages need to reflect that
+  switch (m_compute_layout)
+  {
+  case ComputeImageLayout::Undefined:
+    break;
+  case ComputeImageLayout::ReadOnly:
+    barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    srcStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    break;
+  case ComputeImageLayout::WriteOnly:
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    srcStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    break;
+  case ComputeImageLayout::ReadWrite:
+    barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    srcStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    break;
+  }
+  m_compute_layout = ComputeImageLayout::Undefined;
+
   vkCmdPipelineBarrier(command_buffer, srcStageMask, dstStageMask, 0, 0, nullptr, 0, nullptr, 1,
                        &barrier);
 
   m_layout = new_layout;
+}
+
+void Texture2D::TransitionToLayout(VkCommandBuffer command_buffer, ComputeImageLayout new_layout)
+{
+  ASSERT(new_layout != ComputeImageLayout::Undefined);
+  if (m_compute_layout == new_layout)
+    return;
+
+  VkImageMemoryBarrier barrier = {
+      VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,  // VkStructureType            sType
+      nullptr,                                 // const void*                pNext
+      0,                                       // VkAccessFlags              srcAccessMask
+      0,                                       // VkAccessFlags              dstAccessMask
+      m_layout,                                // VkImageLayout              oldLayout
+      VK_IMAGE_LAYOUT_GENERAL,                 // VkImageLayout              newLayout
+      VK_QUEUE_FAMILY_IGNORED,                 // uint32_t                   srcQueueFamilyIndex
+      VK_QUEUE_FAMILY_IGNORED,                 // uint32_t                   dstQueueFamilyIndex
+      m_image,                                 // VkImage                    image
+      {static_cast<VkImageAspectFlags>(Util::IsDepthFormat(m_format) ? VK_IMAGE_ASPECT_DEPTH_BIT :
+                                                                       VK_IMAGE_ASPECT_COLOR_BIT),
+       0, m_levels, 0, m_layers}  // VkImageSubresourceRange    subresourceRange
+  };
+
+  VkPipelineStageFlags srcStageMask, dstStageMask;
+  switch (m_layout)
+  {
+  case VK_IMAGE_LAYOUT_UNDEFINED:
+    // Layout undefined therefore contents undefined, and we don't care what happens to it.
+    barrier.srcAccessMask = 0;
+    srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    break;
+
+  case VK_IMAGE_LAYOUT_PREINITIALIZED:
+    // Image has been pre-initialized by the host, so ensure all writes have completed.
+    barrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+    srcStageMask = VK_PIPELINE_STAGE_HOST_BIT;
+    break;
+
+  case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+    // Image was being used as a color attachment, so ensure all writes have completed.
+    barrier.srcAccessMask =
+        VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    break;
+
+  case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+    // Image was being used as a depthstencil attachment, so ensure all writes have completed.
+    barrier.srcAccessMask =
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    srcStageMask =
+        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    break;
+
+  case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+    // Image was being used as a shader resource, make sure all reads have finished.
+    barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    break;
+
+  case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+    // Image was being used as a copy source, ensure all reads have finished.
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    break;
+
+  case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+    // Image was being used as a copy destination, ensure all writes have finished.
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    break;
+
+  default:
+    srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    break;
+  }
+
+  switch (new_layout)
+  {
+  case ComputeImageLayout::ReadOnly:
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    dstStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    break;
+  case ComputeImageLayout::WriteOnly:
+    barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    dstStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    break;
+  case ComputeImageLayout::ReadWrite:
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    dstStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    break;
+  default:
+    dstStageMask = 0;
+    break;
+  }
+
+  m_layout = barrier.newLayout;
+  m_compute_layout = new_layout;
+
+  vkCmdPipelineBarrier(command_buffer, srcStageMask, dstStageMask, 0, 0, nullptr, 0, nullptr, 1,
+                       &barrier);
 }
 
 }  // namespace Vulkan

@@ -9,7 +9,7 @@
 
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
-#include <mbedtls/net.h>
+#include <mbedtls/net_sockets.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/platform.h>
 #include <mbedtls/ssl.h>
@@ -19,7 +19,7 @@
 // clang-format on
 
 #include "Common/CommonTypes.h"
-#include "Core/IOS/IPC.h"
+#include "Core/IOS/IOS.h"
 #include "Core/IOS/Device.h"
 
 namespace IOS
@@ -32,7 +32,7 @@ namespace HLE
 #define SSLID_VALID(x)                                                                             \
   (x >= 0 && x < NET_SSL_MAXINSTANCES && ::IOS::HLE::Device::NetSSL::_SSL[x].active)
 
-enum ssl_err_t
+enum ssl_err_t : s32
 {
   SSL_OK = 0,
   SSL_ERR_FAILED = -1,
@@ -81,6 +81,7 @@ struct WII_SSL
   mbedtls_x509_crt clicert;
   mbedtls_pk_context pk;
   int sockfd;
+  int hostfd;
   std::string hostname;
   bool active;
 };
@@ -90,7 +91,7 @@ namespace Device
 class NetSSL : public Device
 {
 public:
-  NetSSL(u32 device_id, const std::string& device_name);
+  NetSSL(Kernel& ios, const std::string& device_name);
 
   virtual ~NetSSL();
 
@@ -100,6 +101,9 @@ public:
   int GetSSLFreeID() const;
 
   static WII_SSL _SSL[NET_SSL_MAXINSTANCES];
+
+private:
+  bool m_cert_error_shown = false;
 };
 }  // namespace Device
 }  // namespace HLE

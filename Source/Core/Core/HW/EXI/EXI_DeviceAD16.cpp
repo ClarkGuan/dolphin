@@ -8,6 +8,8 @@
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
 
+namespace ExpansionInterface
+{
 CEXIAD16::CEXIAD16() = default;
 
 void CEXIAD16::SetCS(int cs)
@@ -37,7 +39,7 @@ void CEXIAD16::TransferByte(u8& byte)
       switch (m_position)
       {
       case 1:
-        _dbg_assert_(EXPANSIONINTERFACE, byte == 0x00);
+        DEBUG_ASSERT(byte == 0x00);
         break;  // just skip
       case 2:
         byte = m_ad16_register.U8[0];
@@ -106,3 +108,4 @@ void CEXIAD16::DoState(PointerWrap& p)
   p.Do(m_command);
   p.Do(m_ad16_register);
 }
+}  // namespace ExpansionInterface

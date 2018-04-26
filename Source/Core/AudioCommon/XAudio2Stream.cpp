@@ -16,7 +16,7 @@
 struct StreamingVoiceContext : public IXAudio2VoiceCallback
 {
 private:
-  CMixer* const m_mixer;
+  Mixer* const m_mixer;
   Common::Event& m_sound_sync_event;
   IXAudio2SourceVoice* m_source_voice;
   std::unique_ptr<BYTE[]> xaudio_buffer;
@@ -24,12 +24,11 @@ private:
   void SubmitBuffer(PBYTE buf_data);
 
 public:
-  StreamingVoiceContext(IXAudio2* pXAudio2, CMixer* pMixer, Common::Event& pSyncEvent);
+  StreamingVoiceContext(IXAudio2* pXAudio2, Mixer* pMixer, Common::Event& pSyncEvent);
+  virtual ~StreamingVoiceContext();
 
-  ~StreamingVoiceContext();
-
-  void StreamingVoiceContext::Stop();
-  void StreamingVoiceContext::Play();
+  void Stop();
+  void Play();
 
   STDMETHOD_(void, OnVoiceError)(THIS_ void* pBufferContext, HRESULT Error) {}
   STDMETHOD_(void, OnVoiceProcessingPassStart)(UINT32) {}
@@ -57,7 +56,7 @@ void StreamingVoiceContext::SubmitBuffer(PBYTE buf_data)
   m_source_voice->SubmitSourceBuffer(&buf);
 }
 
-StreamingVoiceContext::StreamingVoiceContext(IXAudio2* pXAudio2, CMixer* pMixer,
+StreamingVoiceContext::StreamingVoiceContext(IXAudio2* pXAudio2, Mixer* pMixer,
                                              Common::Event& pSyncEvent)
     : m_mixer(pMixer), m_sound_sync_event(pSyncEvent),
       xaudio_buffer(new BYTE[NUM_BUFFERS * BUFFER_SIZE_BYTES]())
@@ -170,7 +169,7 @@ XAudio2::~XAudio2()
     CoUninitialize();
 }
 
-bool XAudio2::Start()
+bool XAudio2::Init()
 {
   HRESULT hr;
 
@@ -211,17 +210,17 @@ void XAudio2::SetVolume(int volume)
     m_mastering_voice->SetVolume(m_volume);
 }
 
-void XAudio2::Clear(bool mute)
+bool XAudio2::SetRunning(bool running)
 {
-  m_muted = mute;
+  if (!m_voice_context)
+    return false;
 
-  if (m_voice_context)
-  {
-    if (m_muted)
-      m_voice_context->Stop();
-    else
-      m_voice_context->Play();
-  }
+  if (running)
+    m_voice_context->Play();
+  else
+    m_voice_context->Stop();
+
+  return true;
 }
 
 void XAudio2::Stop()

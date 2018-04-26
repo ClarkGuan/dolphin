@@ -3,13 +3,14 @@
 // Refer to the license.txt file included.
 
 #include "Core/HW/WII_IPC.h"
+
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
 #include "Core/CoreTiming.h"
 #include "Core/HW/MMIO.h"
 #include "Core/HW/ProcessorInterface.h"
-#include "Core/IOS/IPC.h"
+#include "Core/IOS/IOS.h"
 
 // This is the intercommunication between ARM and PPC. Currently only PPC actually uses it, because
 // of the IOS HLE
@@ -139,7 +140,6 @@ void Reset()
 {
   INFO_LOG(WII_IPC, "Resetting ...");
   InitState();
-  HLE::Reset();
 }
 
 void Shutdown()
@@ -153,9 +153,13 @@ void RegisterMMIO(MMIO::Mapping* mmio, u32 base)
   mmio->Register(base | IPC_PPCCTRL, MMIO::ComplexRead<u32>([](u32) { return ctrl.ppc(); }),
                  MMIO::ComplexWrite<u32>([](u32, u32 val) {
                    ctrl.ppc(val);
+                   // The IPC interrupt is triggered when IY1/IY2 is set and
+                   // Y1/Y2 is written to -- even when this results in clearing the bit.
+                   if ((val >> 2 & 1 && ctrl.IY1) || (val >> 1 & 1 && ctrl.IY2))
+                     ppc_irq_flags |= INT_CAUSE_IPC_BROADWAY;
                    if (ctrl.X1)
-                     HLE::EnqueueRequest(ppc_msg);
-                   HLE::Update();
+                     HLE::GetIOS()->EnqueueIPCRequest(ppc_msg);
+                   HLE::GetIOS()->UpdateIPC();
                    CoreTiming::ScheduleEvent(0, updateInterrupts, 0);
                  }));
 
@@ -164,7 +168,7 @@ void RegisterMMIO(MMIO::Mapping* mmio, u32 base)
   mmio->Register(base | PPC_IRQFLAG, MMIO::InvalidRead<u32>(),
                  MMIO::ComplexWrite<u32>([](u32, u32 val) {
                    ppc_irq_flags &= ~val;
-                   HLE::Update();
+                   HLE::GetIOS()->UpdateIPC();
                    CoreTiming::ScheduleEvent(0, updateInterrupts, 0);
                  }));
 
@@ -173,7 +177,7 @@ void RegisterMMIO(MMIO::Mapping* mmio, u32 base)
                    ppc_irq_masks = val;
                    if (ppc_irq_masks & INT_CAUSE_IPC_BROADWAY)  // wtf?
                      Reset();
-                   HLE::Update();
+                   HLE::GetIOS()->UpdateIPC();
                    CoreTiming::ScheduleEvent(0, updateInterrupts, 0);
                  }));
 
@@ -207,13 +211,19 @@ static void UpdateInterrupts(u64 userdata, s64 cyclesLate)
                                    !!(ppc_irq_flags & ppc_irq_masks));
 }
 
+void ClearX1()
+{
+  ctrl.X1 = 0;
+}
+
 void GenerateAck(u32 _Address)
 {
-  arm_msg = _Address;  // dunno if it's really set here, but HLE needs to stay in context
   ctrl.Y2 = 1;
   DEBUG_LOG(WII_IPC, "GenerateAck: %08x | %08x [R:%i A:%i E:%i]", ppc_msg, _Address, ctrl.Y1,
             ctrl.Y2, ctrl.X1);
-  CoreTiming::ScheduleEvent(1000, updateInterrupts, 0);
+  // Based on a hardware test, the IPC interrupt takes approximately 100 TB ticks to fire
+  // after Y2 is seen in the control register.
+  CoreTiming::ScheduleEvent(100 * SystemTimers::TIMER_RATIO, updateInterrupts);
 }
 
 void GenerateReply(u32 _Address)
@@ -222,7 +232,9 @@ void GenerateReply(u32 _Address)
   ctrl.Y1 = 1;
   DEBUG_LOG(WII_IPC, "GenerateReply: %08x | %08x [R:%i A:%i E:%i]", ppc_msg, _Address, ctrl.Y1,
             ctrl.Y2, ctrl.X1);
-  UpdateInterrupts();
+  // Based on a hardware test, the IPC interrupt takes approximately 100 TB ticks to fire
+  // after Y1 is seen in the control register.
+  CoreTiming::ScheduleEvent(100 * SystemTimers::TIMER_RATIO, updateInterrupts);
 }
 
 bool IsReady()

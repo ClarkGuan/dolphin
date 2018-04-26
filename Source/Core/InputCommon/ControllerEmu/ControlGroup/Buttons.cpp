@@ -8,16 +8,16 @@
 #include <string>
 
 #include "Common/Common.h"
+#include "InputCommon/ControllerEmu/Setting/NumericSetting.h"
 
 namespace ControllerEmu
 {
-Buttons::Buttons(const std::string& name_) : ControlGroup(name_, name_, GROUP_TYPE_BUTTONS)
+Buttons::Buttons(const std::string& name_) : Buttons(name_, name_)
 {
-  numeric_settings.emplace_back(std::make_unique<NumericSetting>(_trans("Threshold"), 0.5));
 }
 
 Buttons::Buttons(const std::string& ini_name, const std::string& group_name)
-    : ControlGroup(ini_name, group_name, GROUP_TYPE_BUTTONS)
+    : ControlGroup(ini_name, group_name, GroupType::Buttons)
 {
   numeric_settings.emplace_back(std::make_unique<NumericSetting>(_trans("Threshold"), 0.5));
 }

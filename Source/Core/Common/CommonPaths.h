@@ -27,21 +27,6 @@
 #define DOLPHIN_DATA_DIR "dolphin-emu"
 #endif
 
-// Shared data dirs (Sys and shared User for Linux)
-#if defined(_WIN32) || defined(LINUX_LOCAL_DEV)
-#define SYSDATA_DIR "Sys"
-#elif defined __APPLE__
-#define SYSDATA_DIR "Contents/Resources/Sys"
-#elif defined ANDROID
-#define SYSDATA_DIR "/sdcard/dolphin-emu"
-#else
-#ifdef DATA_DIR
-#define SYSDATA_DIR DATA_DIR "sys"
-#else
-#define SYSDATA_DIR "sys"
-#endif
-#endif
-
 // Dirs in both User and Sys
 #define EUR_DIR "EUR"
 #define USA_DIR "USA"
@@ -87,8 +72,13 @@
 // Filenames
 // Files in the directory returned by GetUserPath(D_CONFIG_IDX)
 #define DOLPHIN_CONFIG "Dolphin.ini"
+#define GCPAD_CONFIG "GCPadNew.ini"
+#define WIIPAD_CONFIG "WiimoteNew.ini"
+#define GCKEYBOARD_CONFIG "GCKeyNew.ini"
+#define GFX_CONFIG "GFX.ini"
 #define DEBUGGER_CONFIG "Debugger.ini"
 #define LOGGER_CONFIG "Logger.ini"
+#define UI_CONFIG "UI.ini"
 
 // Files in the directory returned by GetUserPath(D_LOGS_IDX)
 #define MAIN_LOG "dolphin.log"

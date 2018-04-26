@@ -91,7 +91,8 @@ bool CommandBufferManager::CreateCommandBuffers()
     VkDescriptorPoolSize pool_sizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 500000},
                                          {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 500000},
                                          {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16},
-                                         {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1024}};
+                                         {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 16384},
+                                         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 16384}};
 
     VkDescriptorPoolCreateInfo pool_create_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                                                    nullptr,
@@ -225,7 +226,7 @@ void CommandBufferManager::WaitForFence(VkFence fence)
     if (m_frame_resources[command_buffer_index].fence == fence)
       break;
   }
-  _assert_(command_buffer_index < m_frame_resources.size());
+  ASSERT(command_buffer_index < m_frame_resources.size());
 
   // Has this command buffer already been waited for?
   if (!m_frame_resources[command_buffer_index].needs_fence_wait)
@@ -341,7 +342,7 @@ void CommandBufferManager::SubmitCommandBuffer(size_t index, VkSemaphore wait_se
   if (present_swap_chain != VK_NULL_HANDLE)
   {
     // Should have a signal semaphore.
-    _assert_(signal_semaphore != VK_NULL_HANDLE);
+    ASSERT(signal_semaphore != VK_NULL_HANDLE);
     VkPresentInfoKHR present_info = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
                                      nullptr,
                                      1,
@@ -351,9 +352,14 @@ void CommandBufferManager::SubmitCommandBuffer(size_t index, VkSemaphore wait_se
                                      &present_image_index,
                                      nullptr};
 
-    res = vkQueuePresentKHR(g_vulkan_context->GetGraphicsQueue(), &present_info);
-    if (res != VK_SUCCESS && res != VK_ERROR_OUT_OF_DATE_KHR && res != VK_SUBOPTIMAL_KHR)
-      LOG_VULKAN_ERROR(res, "vkQueuePresentKHR failed: ");
+    res = vkQueuePresentKHR(g_vulkan_context->GetPresentQueue(), &present_info);
+    if (res != VK_SUCCESS)
+    {
+      // VK_ERROR_OUT_OF_DATE_KHR is not fatal, just means we need to recreate our swap chain.
+      if (res != VK_ERROR_OUT_OF_DATE_KHR && res != VK_SUBOPTIMAL_KHR)
+        LOG_VULKAN_ERROR(res, "vkQueuePresentKHR failed: ");
+      m_present_failed_flag.Set();
+    }
   }
 
   // Command buffer has been queued, so permit the next one.
@@ -365,8 +371,11 @@ void CommandBufferManager::OnCommandBufferExecuted(size_t index)
   FrameResources& resources = m_frame_resources[index];
 
   // Fire fence tracking callbacks.
-  for (const auto& iter : m_fence_point_callbacks)
-    iter.second.second(resources.fence);
+  for (auto iter = m_fence_point_callbacks.begin(); iter != m_fence_point_callbacks.end();)
+  {
+    auto backup_iter = iter++;
+    backup_iter->second.second(resources.fence);
+  }
 
   // Clean up all objects pending destruction on this command buffer
   for (auto& it : resources.cleanup_resources)
@@ -480,14 +489,14 @@ void CommandBufferManager::AddFencePointCallback(
     const CommandBufferExecutedCallback& executed_callback)
 {
   // Shouldn't be adding twice.
-  _assert_(m_fence_point_callbacks.find(key) == m_fence_point_callbacks.end());
+  ASSERT(m_fence_point_callbacks.find(key) == m_fence_point_callbacks.end());
   m_fence_point_callbacks.emplace(key, std::make_pair(queued_callback, executed_callback));
 }
 
 void CommandBufferManager::RemoveFencePointCallback(const void* key)
 {
   auto iter = m_fence_point_callbacks.find(key);
-  _assert_(iter != m_fence_point_callbacks.end());
+  ASSERT(iter != m_fence_point_callbacks.end());
   m_fence_point_callbacks.erase(iter);
 }
 

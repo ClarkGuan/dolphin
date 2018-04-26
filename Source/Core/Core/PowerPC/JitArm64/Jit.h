@@ -41,7 +41,7 @@ public:
 
   void Jit(u32) override;
 
-  const char* GetName() override { return "JITARM64"; }
+  const char* GetName() const override { return "JITARM64"; }
   // OPCODES
   void FallBackToInterpreter(UGeckoInstruction inst);
   void DoNothing(UGeckoInstruction inst);
@@ -142,7 +142,6 @@ public:
   void ps_maddXX(UGeckoInstruction inst);
   void ps_mergeXX(UGeckoInstruction inst);
   void ps_mulsX(UGeckoInstruction inst);
-  void ps_res(UGeckoInstruction inst);
   void ps_sel(UGeckoInstruction inst);
   void ps_sumX(UGeckoInstruction inst);
 
@@ -153,8 +152,8 @@ public:
 private:
   struct SlowmemHandler
   {
-    ARM64Reg dest_reg;
-    ARM64Reg addr_reg;
+    Arm64Gen::ARM64Reg dest_reg;
+    Arm64Gen::ARM64Reg addr_reg;
     BitSet32 gprs;
     BitSet32 fprs;
     u32 flags;
@@ -172,32 +171,8 @@ private:
     const u8* slowmem_code;
   };
 
-  // <Fastmem fault location, slowmem handler location>
-  std::map<const u8*, FastmemArea> m_fault_to_handler;
-  std::map<SlowmemHandler, const u8*> m_handler_to_loc;
-  Arm64GPRCache gpr;
-  Arm64FPRCache fpr;
-
-  JitArm64BlockCache blocks{*this};
-
-  PPCAnalyst::CodeBuffer code_buffer;
-
-  ARM64FloatEmitter m_float_emit;
-
-  Arm64Gen::ARM64CodeBlock farcode;
-  u8* nearcode;  // Backed up when we switch to far code.
-
-  // Do we support cycle counter profiling?
-  bool m_supports_cycle_counter;
-
-  bool m_enable_blr_optimization;
-  bool m_cleanup_after_stackfault = false;
-  u8* m_stack_base = nullptr;
-  u8* m_stack_pointer = nullptr;
-  u8* m_saved_stack_pointer = nullptr;
-
-  void EmitResetCycleCounters();
-  void EmitGetCycles(Arm64Gen::ARM64Reg reg);
+  static void InitializeInstructionTables();
+  void CompileInstruction(PPCAnalyst::CodeOp& op);
 
   // Simple functions to switch between near and far code emitting
   void SwitchToFarCode()
@@ -236,7 +211,6 @@ private:
   // AsmRoutines
   void GenerateAsm();
   void GenerateCommonAsm();
-  void GenMfcr();
 
   // Profiling
   void BeginTimeProfile(JitBlock* b);
@@ -250,14 +224,37 @@ private:
   void FakeLKExit(u32 exit_address_after_return);
   void WriteBLRExit(Arm64Gen::ARM64Reg dest);
 
-  FixupBranch JumpIfCRFieldBit(int field, int bit, bool jump_if_set);
+  Arm64Gen::FixupBranch JumpIfCRFieldBit(int field, int bit, bool jump_if_set);
 
-  void ComputeRC(Arm64Gen::ARM64Reg reg, int crf = 0, bool needs_sext = true);
-  void ComputeRC(u64 imm, int crf = 0, bool needs_sext = true);
+  void ComputeRC0(Arm64Gen::ARM64Reg reg);
+  void ComputeRC0(u64 imm);
   void ComputeCarry(bool Carry);
   void ComputeCarry();
   void FlushCarry();
 
   void reg_imm(u32 d, u32 a, u32 value, u32 (*do_op)(u32, u32),
-               void (ARM64XEmitter::*op)(ARM64Reg, ARM64Reg, u64, ARM64Reg), bool Rc = false);
+               void (ARM64XEmitter::*op)(Arm64Gen::ARM64Reg, Arm64Gen::ARM64Reg, u64,
+                                         Arm64Gen::ARM64Reg),
+               bool Rc = false);
+
+  // <Fastmem fault location, slowmem handler location>
+  std::map<const u8*, FastmemArea> m_fault_to_handler;
+  std::map<SlowmemHandler, const u8*> m_handler_to_loc;
+  Arm64GPRCache gpr;
+  Arm64FPRCache fpr;
+
+  JitArm64BlockCache blocks{*this};
+
+  PPCAnalyst::CodeBuffer code_buffer;
+
+  Arm64Gen::ARM64FloatEmitter m_float_emit;
+
+  Arm64Gen::ARM64CodeBlock farcode;
+  u8* nearcode;  // Backed up when we switch to far code.
+
+  bool m_enable_blr_optimization;
+  bool m_cleanup_after_stackfault = false;
+  u8* m_stack_base = nullptr;
+  u8* m_stack_pointer = nullptr;
+  u8* m_saved_stack_pointer = nullptr;
 };

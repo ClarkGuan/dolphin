@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cstring>
+#include <memory>
 
 #include "Common/CommonTypes.h"
 
@@ -50,6 +51,7 @@ public:
 
   virtual void DoState(PointerWrap& p) { DoStateShared(p); }
   static u32 GetCRC(UCodeInterface* ucode) { return ucode ? ucode->m_crc : UCODE_NULL; }
+
 protected:
   void PrepareBootUCode(u32 mail);
 
@@ -62,7 +64,7 @@ protected:
 
   CMailHandler& m_mail_handler;
 
-  enum EDSP_Codes
+  enum EDSP_Codes : u32
   {
     DSP_INIT = 0xDCD10000,
     DSP_RESUME = 0xDCD10001,
@@ -103,6 +105,6 @@ private:
   bool m_needs_resume_mail = false;
 };
 
-UCodeInterface* UCodeFactory(u32 crc, DSPHLE* dsphle, bool wii);
+std::unique_ptr<UCodeInterface> UCodeFactory(u32 crc, DSPHLE* dsphle, bool wii);
 }  // namespace HLE
 }  // namespace DSP

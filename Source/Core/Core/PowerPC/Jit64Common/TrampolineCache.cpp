@@ -14,7 +14,6 @@
 #include "Core/PowerPC/Jit64Common/Jit64Base.h"
 #include "Core/PowerPC/Jit64Common/Jit64PowerPCState.h"
 #include "Core/PowerPC/Jit64Common/TrampolineInfo.h"
-#include "Core/PowerPC/JitCommon/JitBase.h"
 #include "Core/PowerPC/PowerPC.h"
 
 #ifdef _WIN32
@@ -23,19 +22,9 @@
 
 using namespace Gen;
 
-void TrampolineCache::Init(size_t size)
-{
-  AllocCodeSpace(size);
-}
-
 void TrampolineCache::ClearCodeSpace()
 {
   X64CodeBlock::ClearCodeSpace();
-}
-
-void TrampolineCache::Shutdown()
-{
-  FreeCodeSpace();
 }
 
 const u8* TrampolineCache::GenerateTrampoline(const TrampolineInfo& info)
@@ -73,9 +62,6 @@ const u8* TrampolineCache::GenerateWriteTrampoline(const TrampolineInfo& info)
 
   // Don't treat FIFO writes specially for now because they require a burst
   // check anyway.
-
-  // PC is used by memory watchpoints (if enabled) or to print accurate PC locations in debug logs
-  MOV(32, PPCSTATE(pc), Imm32(info.pc));
 
   SafeWriteRegToReg(info.op_arg, info.op_reg, info.accessSize << 3, info.offset,
                     info.registersInUse, info.flags | SAFE_LOADSTORE_FORCE_SLOWMEM);

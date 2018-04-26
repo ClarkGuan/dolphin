@@ -24,7 +24,7 @@ static SLPlayItf bqPlayerPlay;
 static SLAndroidSimpleBufferQueueItf bqPlayerBufferQueue;
 static SLMuteSoloItf bqPlayerMuteSolo;
 static SLVolumeItf bqPlayerVolume;
-static CMixer* g_mixer;
+static Mixer* g_mixer;
 #define BUFFER_SIZE 512
 #define BUFFER_SIZE_IN_SAMPLES (BUFFER_SIZE / 2)
 
@@ -46,10 +46,10 @@ static void bqPlayerCallback(SLAndroidSimpleBufferQueueItf bq, void* context)
   // Comment from sample code:
   // the most likely other result is SL_RESULT_BUFFER_INSUFFICIENT,
   // which for this code example would indicate a programming error
-  _assert_msg_(AUDIO, SL_RESULT_SUCCESS == result, "Couldn't enqueue audio stream.");
+  ASSERT_MSG(AUDIO, SL_RESULT_SUCCESS == result, "Couldn't enqueue audio stream.");
 }
 
-bool OpenSLESStream::Start()
+bool OpenSLESStream::Init()
 {
   SLresult result;
   // create engine
@@ -110,7 +110,7 @@ bool OpenSLESStream::Start()
   return true;
 }
 
-void OpenSLESStream::Stop()
+OpenSLESStream::~OpenSLESStream()
 {
   if (bqPlayerObject != nullptr)
   {

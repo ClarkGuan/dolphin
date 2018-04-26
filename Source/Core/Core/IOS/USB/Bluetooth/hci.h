@@ -83,7 +83,10 @@
 
 #pragma once
 
-#include <stdint.h>
+#include <array>
+#include <cstdint>
+
+#include "Common/CommonTypes.h"
 
 // All structs in this file are packed
 #pragma pack(push, 1)
@@ -94,18 +97,8 @@
 /*
  * Bluetooth device address
  */
-#ifndef __BLUETOOTH_H
-typedef struct
-{
-  uint8_t b[BLUETOOTH_BDADDR_SIZE];
-} bdaddr_t;
-#define BDADDR_ANY                                                                                 \
-  {                                                                                                \
-    {                                                                                              \
-      0, 0, 0, 0, 0, 0                                                                             \
-    }                                                                                              \
-  }
-#endif
+using bdaddr_t = std::array<u8, BLUETOOTH_BDADDR_SIZE>;
+constexpr bdaddr_t BDADDR_ANY{};
 
 /**************************************************************************
  **************************************************************************
@@ -2537,11 +2530,11 @@ static __inline int hci_filter_test(uint8_t bit, const struct hci_filter* filter
   return (filter->mask[off] & (1 << ((bit - 1) & 0x1f)));
 }
 
-/*
- * HCI socket ioctl's
- *
- * Apart from GBTINFOA, these are all indexed on the unit name
- */
+  /*
+   * HCI socket ioctl's
+   *
+   * Apart from GBTINFOA, these are all indexed on the unit name
+   */
 
 #define SIOCGBTINFO _IOWR('b', 5, struct btreq)  /* get unit info */
 #define SIOCGBTINFOA _IOWR('b', 6, struct btreq) /* get info by address */

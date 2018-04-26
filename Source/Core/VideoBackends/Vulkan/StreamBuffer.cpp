@@ -22,8 +22,9 @@ StreamBuffer::StreamBuffer(VkBufferUsageFlags usage, size_t max_size)
 {
   // Add a callback that fires on fence point creation and signal
   g_command_buffer_mgr->AddFencePointCallback(
-      this, std::bind(&StreamBuffer::OnCommandBufferQueued, this, std::placeholders::_1,
-                      std::placeholders::_2),
+      this,
+      std::bind(&StreamBuffer::OnCommandBufferQueued, this, std::placeholders::_1,
+                std::placeholders::_2),
       std::bind(&StreamBuffer::OnCommandBufferExecuted, this, std::placeholders::_1));
 }
 
@@ -209,8 +210,8 @@ bool StreamBuffer::ReserveMemory(size_t num_bytes, size_t alignment, bool allow_
   // Can we find a fence to wait on that will give us enough memory?
   if (allow_reuse && WaitForClearSpace(required_bytes))
   {
-    _assert_(m_current_offset == m_current_gpu_position ||
-             (m_current_offset + required_bytes) < m_current_gpu_position);
+    ASSERT(m_current_offset == m_current_gpu_position ||
+           (m_current_offset + required_bytes) < m_current_gpu_position);
     m_current_offset = Util::AlignBufferOffset(m_current_offset, alignment);
     m_last_allocation_size = num_bytes;
     return true;
@@ -232,8 +233,8 @@ bool StreamBuffer::ReserveMemory(size_t num_bytes, size_t alignment, bool allow_
 
 void StreamBuffer::CommitMemory(size_t final_num_bytes)
 {
-  _assert_((m_current_offset + final_num_bytes) <= m_current_size);
-  _assert_(final_num_bytes <= m_last_allocation_size);
+  ASSERT((m_current_offset + final_num_bytes) <= m_current_size);
+  ASSERT(final_num_bytes <= m_last_allocation_size);
 
   // For non-coherent mappings, flush the memory range
   if (!m_coherent_mapping)
@@ -316,7 +317,7 @@ bool StreamBuffer::WaitForClearSpace(size_t num_bytes)
       // We're currently allocating behind the GPU. This would give us between the current
       // offset and the GPU position worth of space to work with. Again, > because we can't
       // align the GPU position with the buffer offset.
-      size_t available_space_inbetween = m_current_offset - gpu_position;
+      size_t available_space_inbetween = gpu_position - m_current_offset;
       if (available_space_inbetween > num_bytes)
       {
         // Leave the offset as-is, but update the GPU position.

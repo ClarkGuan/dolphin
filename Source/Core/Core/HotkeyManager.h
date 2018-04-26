@@ -21,6 +21,7 @@ enum Hotkey
 {
   HK_OPEN,
   HK_CHANGE_DISC,
+  HK_EJECT_DISC,
   HK_REFRESH_LIST,
   HK_PLAY_PAUSE,
   HK_STOP,
@@ -69,6 +70,8 @@ enum Hotkey
   HK_TOGGLE_CROP,
   HK_TOGGLE_AR,
   HK_TOGGLE_EFBCOPIES,
+  HK_TOGGLE_XFBCOPIES,
+  HK_TOGGLE_IMMEDIATE_XFB,
   HK_TOGGLE_FOG,
   HK_TOGGLE_DUMPTEXTURES,
   HK_TOGGLE_TEXTURES,
@@ -199,7 +202,6 @@ public:
   void GetInput(HotkeyStatus* const hk);
   std::string GetName() const override;
   ControllerEmu::ControlGroup* GetHotkeyGroup(HotkeyGroup group) const;
-  ControllerEmu::ControlGroup* GetOptionsGroup() const;
   int FindGroupByID(int id) const;
   int GetIndexForGroup(int group, int id) const;
   void LoadDefaults(const ControllerInterface& ciface) override;
@@ -207,7 +209,6 @@ public:
 private:
   ControllerEmu::Buttons* m_keys[NUM_HOTKEY_GROUPS];
   std::array<ControllerEmu::ControlGroup*, NUM_HOTKEY_GROUPS> m_hotkey_groups;
-  ControllerEmu::ControlGroup* m_options;
 };
 
 namespace HotkeyManagerEmu
@@ -218,7 +219,6 @@ void LoadConfig();
 
 InputConfig* GetConfig();
 ControllerEmu::ControlGroup* GetHotkeyGroup(HotkeyGroup group);
-ControllerEmu::ControlGroup* GetOptionsGroup();
 void GetStatus();
 bool IsEnabled();
 void Enable(bool enable_toggle);

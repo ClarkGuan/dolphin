@@ -5,7 +5,6 @@
 #include "InputCommon/ControllerEmu/ControlGroup/Force.h"
 
 #include <cmath>
-#include <cstring>
 #include <memory>
 #include <string>
 
@@ -14,19 +13,18 @@
 #include "InputCommon/ControlReference/ControlReference.h"
 #include "InputCommon/ControllerEmu/Control/Input.h"
 #include "InputCommon/ControllerEmu/ControllerEmu.h"
+#include "InputCommon/ControllerEmu/Setting/NumericSetting.h"
 
 namespace ControllerEmu
 {
-Force::Force(const std::string& name_) : ControlGroup(name_, GROUP_TYPE_FORCE)
+Force::Force(const std::string& name_) : ControlGroup(name_, GroupType::Force)
 {
-  memset(m_swing, 0, sizeof(m_swing));
-
-  controls.emplace_back(std::make_unique<Input>(_trans("Up")));
-  controls.emplace_back(std::make_unique<Input>(_trans("Down")));
-  controls.emplace_back(std::make_unique<Input>(_trans("Left")));
-  controls.emplace_back(std::make_unique<Input>(_trans("Right")));
-  controls.emplace_back(std::make_unique<Input>(_trans("Forward")));
-  controls.emplace_back(std::make_unique<Input>(_trans("Backward")));
+  controls.emplace_back(std::make_unique<Input>(Translate, _trans("Up")));
+  controls.emplace_back(std::make_unique<Input>(Translate, _trans("Down")));
+  controls.emplace_back(std::make_unique<Input>(Translate, _trans("Left")));
+  controls.emplace_back(std::make_unique<Input>(Translate, _trans("Right")));
+  controls.emplace_back(std::make_unique<Input>(Translate, _trans("Forward")));
+  controls.emplace_back(std::make_unique<Input>(Translate, _trans("Backward")));
 
   numeric_settings.emplace_back(std::make_unique<NumericSetting>(_trans("Dead Zone"), 0, 0, 50));
 }

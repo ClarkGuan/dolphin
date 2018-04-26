@@ -22,56 +22,51 @@
 #define CONF_SAVETARGETS 8
 #define CONF_SAVESHADERS 16
 
-enum AspectMode
+constexpr int EFB_SCALE_AUTO_INTEGRAL = 0;
+
+enum class AspectMode : int
 {
-  ASPECT_AUTO = 0,
-  ASPECT_ANALOG_WIDE = 1,
-  ASPECT_ANALOG = 2,
-  ASPECT_STRETCH = 3,
+  Auto,
+  AnalogWide,
+  Analog,
+  Stretch,
 };
 
-enum EFBScale
+enum class StereoMode : int
 {
-  SCALE_FORCE_INTEGRAL = -1,
-  SCALE_AUTO,
-  SCALE_AUTO_INTEGRAL,
-  SCALE_1X,
-  SCALE_1_5X,
-  SCALE_2X,
-  SCALE_2_5X,
+  Off,
+  SBS,
+  TAB,
+  Anaglyph,
+  QuadBuffer,
+  Nvidia3DVision
 };
 
-enum StereoMode
+enum class ShaderCompilationMode : int
 {
-  STEREO_OFF = 0,
-  STEREO_SBS,
-  STEREO_TAB,
-  STEREO_ANAGLYPH,
-  STEREO_3DVISION
+  Synchronous,
+  SynchronousUberShaders,
+  AsynchronousUberShaders,
+  AsynchronousSkipRendering
 };
 
 // NEVER inherit from this class.
 struct VideoConfig final
 {
   VideoConfig();
-  void Load(const std::string& ini_file);
-  void GameIniLoad();
+  void Refresh();
   void VerifyValidity();
-  void Save(const std::string& ini_file);
-  void UpdateProjectionHack();
-  bool IsVSync();
+  bool IsVSync() const;
 
   // General
   bool bVSync;
-  bool bRunning;
   bool bWidescreenHack;
-  int iAspectRatio;
+  AspectMode aspect_mode;
   bool bCrop;  // Aspect ratio controls.
-  bool bUseXFB;
-  bool bUseRealXFB;
+  bool bShaderCache;
 
   // Enhancements
-  int iMultisamples;
+  u32 iMultisamples;
   bool bSSAA;
   int iEFBScale;
   bool bForceFiltering;
@@ -96,35 +91,44 @@ struct VideoConfig final
   // Utility
   bool bDumpTextures;
   bool bHiresTextures;
-  bool bConvertHiresTextures;
   bool bCacheHiresTextures;
   bool bDumpEFBTarget;
+  bool bDumpXFBTarget;
   bool bDumpFramesAsImages;
   bool bUseFFV1;
+  std::string sDumpCodec;
+  std::string sDumpEncoder;
+  std::string sDumpFormat;
+  std::string sDumpPath;
   bool bInternalResolutionFrameDumps;
   bool bFreeLook;
   bool bBorderlessFullscreen;
+  bool bEnableGPUTextureDecoding;
+  int iBitrateKbps;
 
   // Hacks
   bool bEFBAccessEnable;
   bool bPerfQueriesEnable;
   bool bBBoxEnable;
+  bool bBBoxPreferStencilImplementation;  // OpenGL-only, to see how slow it is compared to SSBOs
   bool bForceProgressive;
 
   bool bEFBEmulateFormatChanges;
   bool bSkipEFBCopyToRam;
+  bool bSkipXFBCopyToRam;
+  bool bDisableCopyToVRAM;
+  bool bImmediateXFB;
   bool bCopyEFBScaled;
   int iSafeTextureCache_ColorSamples;
-  int iPhackvalue[3];
-  std::string sPhackvalue[2];
   float fAspectRatioHackW, fAspectRatioHackH;
   bool bEnablePixelLighting;
   bool bFastDepthCalc;
+  bool bVertexRounding;
   int iLog;           // CONF_ bits
   int iSaveTargetId;  // TODO: Should be dropped
 
   // Stereoscopy
-  int iStereoMode;
+  StereoMode stereo_mode;
   int iStereoDepth;
   int iStereoConvergence;
   int iStereoConvergencePercentage;
@@ -154,6 +158,16 @@ struct VideoConfig final
   // Currently only supported with Vulkan.
   int iCommandBufferExecuteInterval;
 
+  // Shader compilation settings.
+  bool bWaitForShadersBeforeStarting;
+  ShaderCompilationMode iShaderCompilationMode;
+
+  // Number of shader compiler threads.
+  // 0 disables background compilation.
+  // -1 uses an automatic number based on the CPU threads.
+  int iShaderCompilerThreads;
+  int iShaderPrecompilerThreads;
+
   // Static config per API
   // TODO: Move this out of VideoConfig
   struct
@@ -161,18 +175,19 @@ struct VideoConfig final
     APIType api_type;
 
     std::vector<std::string> Adapters;  // for D3D
-    std::vector<int> AAModes;
-    std::vector<std::string> PPShaders;        // post-processing shaders
-    std::vector<std::string> AnaglyphShaders;  // anaglyph shaders
+    std::vector<u32> AAModes;
 
     // TODO: merge AdapterName and Adapters array
     std::string AdapterName;  // for OpenGL
+
+    u32 MaxTextureSize;
 
     bool bSupportsExclusiveFullscreen;
     bool bSupportsDualSourceBlend;
     bool bSupportsPrimitiveRestart;
     bool bSupportsOversizedViewports;
     bool bSupportsGeometryShaders;
+    bool bSupportsComputeShaders;
     bool bSupports3DVision;
     bool bSupportsEarlyZ;         // needed by PixelShaderGen, so must stay in VideoCommon
     bool bSupportsBindingLayout;  // Needed by ShaderGen, so must stay in VideoCommon
@@ -182,19 +197,40 @@ struct VideoConfig final
     bool bSupportsPaletteConversion;
     bool bSupportsClipControl;  // Needed by VertexShaderGen, so must stay in VideoCommon
     bool bSupportsSSAA;
+    bool bSupportsFragmentStoresAndAtomics;  // a.k.a. OpenGL SSBOs a.k.a. Direct3D UAVs
     bool bSupportsDepthClamp;  // Needed by VertexShaderGen, so must stay in VideoCommon
     bool bSupportsReversedDepthRange;
     bool bSupportsMultithreading;
-    bool bSupportsInternalResolutionFrameDumps;
+    bool bSupportsGPUTextureDecoding;
+    bool bSupportsST3CTextures;
+    bool bSupportsCopyToVram;
+    bool bSupportsBitfield;                // Needed by UberShaders, so must stay in VideoCommon
+    bool bSupportsDynamicSamplerIndexing;  // Needed by UberShaders, so must stay in VideoCommon
+    bool bSupportsBPTCTextures;
+    bool bSupportsFramebufferFetch;  // Used as an alternative to dual-source blend on GLES
+    bool bSupportsBackgroundCompiling;
   } backend_info;
 
   // Utility
-  bool RealXFBEnabled() const { return bUseXFB && bUseRealXFB; }
-  bool VirtualXFBEnabled() const { return bUseXFB && !bUseRealXFB; }
+  bool MultisamplingEnabled() const { return iMultisamples > 1; }
   bool ExclusiveFullscreenEnabled() const
   {
     return backend_info.bSupportsExclusiveFullscreen && !bBorderlessFullscreen;
   }
+  bool BBoxUseFragmentShaderImplementation() const
+  {
+    if (backend_info.api_type == APIType::OpenGL && bBBoxPreferStencilImplementation)
+      return false;
+    return backend_info.bSupportsBBox && backend_info.bSupportsFragmentStoresAndAtomics;
+  }
+  bool UseGPUTextureDecoding() const
+  {
+    return backend_info.bSupportsGPUTextureDecoding && bEnableGPUTextureDecoding;
+  }
+  bool UseVertexRounding() const { return bVertexRounding && iEFBScale != 1; }
+  bool UsingUberShaders() const;
+  u32 GetShaderCompilerThreads() const;
+  u32 GetShaderPrecompilerThreads() const;
 };
 
 extern VideoConfig g_Config;

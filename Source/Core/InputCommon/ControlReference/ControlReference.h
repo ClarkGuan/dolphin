@@ -31,17 +31,19 @@ public:
   virtual bool IsInput() const = 0;
 
   int BoundCount() const;
-  ciface::ExpressionParser::ExpressionParseStatus GetParseStatus() const;
-  void UpdateReference(ciface::Core::DeviceContainer& devices,
+  ciface::ExpressionParser::ParseStatus GetParseStatus() const;
+  void UpdateReference(const ciface::Core::DeviceContainer& devices,
                        const ciface::Core::DeviceQualifier& default_device);
+  std::string GetExpression() const;
+  void SetExpression(std::string expr);
 
   ControlState range;
-  std::string expression;
 
 protected:
   ControlReference();
+  std::string m_expression;
   std::unique_ptr<ciface::ExpressionParser::Expression> m_parsed_expression;
-  ciface::ExpressionParser::ExpressionParseStatus m_parse_status;
+  ciface::ExpressionParser::ParseStatus m_parse_status;
 };
 
 //

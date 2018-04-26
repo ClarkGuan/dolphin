@@ -16,6 +16,7 @@
 #include <wx/choice.h>
 #include <wx/clipbrd.h>
 #include <wx/colour.h>
+#include <wx/config.h>
 #include <wx/dialog.h>
 #include <wx/frame.h>
 #include <wx/listbox.h>
@@ -31,11 +32,13 @@
 
 #include "Common/CommonPaths.h"
 #include "Common/CommonTypes.h"
-#include "Common/FifoQueue.h"
+#include "Common/Config/Config.h"
 #include "Common/FileUtil.h"
-#include "Common/IniFile.h"
 #include "Common/MsgHandler.h"
+#include "Common/SPSCQueue.h"
+#include "Common/StringUtil.h"
 
+#include "Core/Config/SYSCONFSettings.h"
 #include "Core/ConfigManager.h"
 #include "Core/HW/EXI/EXI_Device.h"
 #include "Core/NetPlayClient.h"
@@ -44,11 +47,12 @@
 
 #include "DolphinWX/Frame.h"
 #include "DolphinWX/GameListCtrl.h"
-#include "DolphinWX/ISOFile.h"
 #include "DolphinWX/NetPlay/ChangeGameDialog.h"
+#include "DolphinWX/NetPlay/MD5Dialog.h"
 #include "DolphinWX/NetPlay/PadMapDialog.h"
 #include "DolphinWX/WxUtils.h"
-#include "MD5Dialog.h"
+
+#include "UICommon/GameFile.h"
 
 #include "VideoCommon/OnScreenDisplay.h"
 #include "VideoCommon/VideoConfig.h"
@@ -57,13 +61,13 @@ NetPlayServer* NetPlayDialog::netplay_server = nullptr;
 NetPlayClient* NetPlayDialog::netplay_client = nullptr;
 NetPlayDialog* NetPlayDialog::npd = nullptr;
 
-void NetPlayDialog::FillWithGameNames(wxListBox* game_lbox, const CGameListCtrl& game_list)
+void NetPlayDialog::FillWithGameNames(wxListBox* game_lbox, const GameListCtrl& game_list)
 {
   for (u32 i = 0; auto game = game_list.GetISO(i); ++i)
     game_lbox->Append(StrToWxStr(game->GetUniqueIdentifier()));
 }
 
-NetPlayDialog::NetPlayDialog(wxWindow* const parent, const CGameListCtrl* const game_list,
+NetPlayDialog::NetPlayDialog(wxWindow* const parent, const GameListCtrl* const game_list,
                              const std::string& game, const bool is_hosting)
     : wxFrame(parent, wxID_ANY, _("Dolphin NetPlay")), m_selected_game(game), m_start_btn(nullptr),
       m_host_label(nullptr), m_host_type_choice(nullptr), m_host_copy_btn(nullptr),
@@ -76,15 +80,11 @@ NetPlayDialog::NetPlayDialog(wxWindow* const parent, const CGameListCtrl* const 
 
   // Remember the window size and position for NetWindow
   {
-    IniFile inifile;
-    inifile.Load(File::GetUserPath(F_DOLPHINCONFIG_IDX));
-    IniFile::Section& netplay_section = *inifile.GetOrCreateSection("NetPlay");
-
     int winPosX, winPosY, winWidth, winHeight;
-    netplay_section.Get("NetWindowPosX", &winPosX, std::numeric_limits<int>::min());
-    netplay_section.Get("NetWindowPosY", &winPosY, std::numeric_limits<int>::min());
-    netplay_section.Get("NetWindowWidth", &winWidth, -1);
-    netplay_section.Get("NetWindowHeight", &winHeight, -1);
+    wxConfig::Get()->Read("NetWindowPosX", &winPosX, std::numeric_limits<int>::min());
+    wxConfig::Get()->Read("NetWindowPosY", &winPosY, std::numeric_limits<int>::min());
+    wxConfig::Get()->Read("NetWindowWidth", &winWidth, -1);
+    wxConfig::Get()->Read("NetWindowHeight", &winHeight, -1);
 
     WxUtils::SetWindowSizeAndFitToScreen(this, wxPoint(winPosX, winPosY),
                                          wxSize(winWidth, winHeight), GetSize());
@@ -258,7 +258,7 @@ wxSizer* NetPlayDialog::CreateBottomGUI(wxWindow* parent)
 
     m_memcard_write = new wxCheckBox(parent, wxID_ANY, _("Write save/SD data"));
 
-    m_copy_wii_save = new wxCheckBox(parent, wxID_ANY, _("Copy Wii Save"));
+    m_copy_wii_save = new wxCheckBox(parent, wxID_ANY, _("Load Wii Save"));
 
     bottom_szr->Add(m_start_btn, 0, wxALIGN_CENTER_VERTICAL);
     bottom_szr->Add(buffer_lbl, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, space5);
@@ -281,17 +281,10 @@ wxSizer* NetPlayDialog::CreateBottomGUI(wxWindow* parent)
 
 NetPlayDialog::~NetPlayDialog()
 {
-  IniFile inifile;
-  const std::string dolphin_ini = File::GetUserPath(F_DOLPHINCONFIG_IDX);
-  inifile.Load(dolphin_ini);
-  IniFile::Section& netplay_config = *inifile.GetOrCreateSection("NetPlay");
-
-  netplay_config.Set("NetWindowPosX", GetPosition().x);
-  netplay_config.Set("NetWindowPosY", GetPosition().y);
-  netplay_config.Set("NetWindowWidth", GetSize().GetWidth());
-  netplay_config.Set("NetWindowHeight", GetSize().GetHeight());
-
-  inifile.Save(dolphin_ini);
+  wxConfig::Get()->Write("NetWindowPosX", GetPosition().x);
+  wxConfig::Get()->Write("NetWindowPosY", GetPosition().y);
+  wxConfig::Get()->Write("NetWindowWidth", GetSize().GetWidth());
+  wxConfig::Get()->Write("NetWindowHeight", GetSize().GetHeight());
 
   if (netplay_client)
   {
@@ -326,8 +319,8 @@ void NetPlayDialog::GetNetSettings(NetSettings& settings)
   settings.m_EnableCheats = instance.bEnableCheats;
   settings.m_SelectedLanguage = instance.SelectedLanguage;
   settings.m_OverrideGCLanguage = instance.bOverrideGCLanguage;
-  settings.m_ProgressiveScan = instance.bProgressive;
-  settings.m_PAL60 = instance.bPAL60;
+  settings.m_ProgressiveScan = Config::Get(Config::SYSCONF_PROGRESSIVE_SCAN);
+  settings.m_PAL60 = Config::Get(Config::SYSCONF_PAL60);
   settings.m_DSPHLE = instance.bDSPHLE;
   settings.m_DSPEnableJIT = instance.m_DSPEnableJIT;
   settings.m_WriteToMemcard = m_memcard_write->GetValue();
@@ -343,7 +336,7 @@ std::string NetPlayDialog::FindGame(const std::string& target_game)
   // find path for selected game, sloppy..
   for (u32 i = 0; auto game = m_game_list->GetISO(i); ++i)
     if (target_game == game->GetUniqueIdentifier())
-      return game->GetFileName();
+      return game->GetFilePath();
 
   return "";
 }
@@ -467,19 +460,19 @@ void NetPlayDialog::OnConnectionLost()
   GetEventHandler()->AddPendingEvent(evt);
 }
 
-void NetPlayDialog::OnTraversalError(int error)
+void NetPlayDialog::OnTraversalError(TraversalClient::FailureReason error)
 {
   switch (error)
   {
-  case TraversalClient::BadHost:
+  case TraversalClient::FailureReason::BadHost:
     PanicAlertT("Couldn't look up central server");
     break;
-  case TraversalClient::VersionTooOld:
+  case TraversalClient::FailureReason::VersionTooOld:
     PanicAlertT("Dolphin is too old for traversal server");
     break;
-  case TraversalClient::ServerForgotAboutUs:
-  case TraversalClient::SocketSendError:
-  case TraversalClient::ResendTimeout:
+  case TraversalClient::FailureReason::ServerForgotAboutUs:
+  case TraversalClient::FailureReason::SocketSendError:
+  case TraversalClient::FailureReason::ResendTimeout:
     wxThreadEvent evt(wxEVT_THREAD, NP_GUI_EVT_TRAVERSAL_CONNECTION_ERROR);
     GetEventHandler()->AddPendingEvent(evt);
     break;
@@ -589,7 +582,7 @@ void NetPlayDialog::OnThread(wxThreadEvent& event)
   break;
   case NP_GUI_EVT_PAD_BUFFER_CHANGE:
   {
-    std::string msg = StringFromFormat("Pad buffer: %d", m_pad_buffer);
+    std::string msg = StringFromFormat("Buffer size: %d", m_pad_buffer);
 
     if (g_ActiveConfig.bShowNetPlayMessages)
     {
@@ -784,7 +777,7 @@ void NetPlayDialog::UpdateHostLabel()
   if (sel == 0)
   {
     // the traversal ID
-    switch (g_TraversalClient->m_State)
+    switch (g_TraversalClient->GetState())
     {
     case TraversalClient::Connecting:
       m_host_label->SetForegroundColour(*wxLIGHT_GREY);
@@ -793,13 +786,15 @@ void NetPlayDialog::UpdateHostLabel()
       m_host_copy_btn->Disable();
       break;
     case TraversalClient::Connected:
+    {
+      const auto host_id = g_TraversalClient->GetHostID();
       m_host_label->SetForegroundColour(*wxBLACK);
-      m_host_label->SetLabel(
-          wxString(g_TraversalClient->m_HostId.data(), g_TraversalClient->m_HostId.size()));
+      m_host_label->SetLabel(wxString(host_id.data(), host_id.size()));
       m_host_copy_btn->SetLabel(_("Copy"));
       m_host_copy_btn->Enable();
       m_host_copy_btn_is_retry = false;
       break;
+    }
     case TraversalClient::Failure:
       m_host_label->SetForegroundColour(*wxBLACK);
       m_host_label->SetLabel("...");

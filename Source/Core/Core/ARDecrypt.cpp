@@ -6,17 +6,21 @@
 // GCNcrypt - GameCube AR Crypto Program
 // Copyright (C) 2003-2004 Parasyte
 
+#include "Core/ARDecrypt.h"
+
 #include <algorithm>
 #include <cstring>
+#include <string>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
 #endif
 
-#include "Common/CommonFuncs.h"
+#include "Common/BitUtils.h"
 #include "Common/CommonTypes.h"
 #include "Common/MsgHandler.h"
-#include "Core/ARDecrypt.h"
+#include "Common/Swap.h"
 
 namespace ActionReplay
 {
@@ -207,7 +211,7 @@ static void buildseeds()
   generateseeds(genseeds, gensubtable, 0);
 }
 
-static void getcode(u32* src, u32* addr, u32* val)
+static void getcode(const u32* src, u32* addr, u32* val)
 {
   *addr = Common::swap32(src[0]);
   *val = Common::swap32(src[1]);
@@ -219,7 +223,7 @@ static void setcode(u32* dst, u32 addr, u32 val)
   dst[1] = Common::swap32(val);
 }
 
-static u16 gencrc16(u32* codes, u16 size)
+static u16 gencrc16(const u32* codes, u16 size)
 {
   u16 ret = 0;
 
@@ -237,7 +241,7 @@ static u16 gencrc16(u32* codes, u16 size)
   return ret;
 }
 
-static u8 verifycode(u32* codes, u16 size)
+static u8 verifycode(const u32* codes, u16 size)
 {
   u16 tmp = gencrc16(codes, size);
   return (((tmp >> 12) ^ (tmp >> 8) ^ (tmp >> 4) ^ tmp) & 0x0F);
@@ -247,26 +251,26 @@ static void unscramble1(u32* addr, u32* val)
 {
   u32 tmp;
 
-  *val = _rotl(*val, 4);
+  *val = Common::RotateLeft(*val, 4);
 
   tmp = ((*addr ^ *val) & 0xF0F0F0F0);
   *addr ^= tmp;
-  *val = _rotr((*val ^ tmp), 0x14);
+  *val = Common::RotateRight((*val ^ tmp), 0x14);
 
   tmp = ((*addr ^ *val) & 0xFFFF0000);
   *addr ^= tmp;
-  *val = _rotr((*val ^ tmp), 0x12);
+  *val = Common::RotateRight((*val ^ tmp), 0x12);
 
   tmp = ((*addr ^ *val) & 0x33333333);
   *addr ^= tmp;
-  *val = _rotr((*val ^ tmp), 6);
+  *val = Common::RotateRight((*val ^ tmp), 6);
 
   tmp = ((*addr ^ *val) & 0x00FF00FF);
   *addr ^= tmp;
-  *val = _rotl((*val ^ tmp), 9);
+  *val = Common::RotateLeft((*val ^ tmp), 9);
 
   tmp = ((*addr ^ *val) & 0xAAAAAAAA);
-  *addr = _rotl((*addr ^ tmp), 1);
+  *addr = Common::RotateLeft((*addr ^ tmp), 1);
   *val ^= tmp;
 }
 
@@ -274,30 +278,30 @@ static void unscramble2(u32* addr, u32* val)
 {
   u32 tmp;
 
-  *val = _rotr(*val, 1);
+  *val = Common::RotateRight(*val, 1);
 
   tmp = ((*addr ^ *val) & 0xAAAAAAAA);
   *val ^= tmp;
-  *addr = _rotr((*addr ^ tmp), 9);
+  *addr = Common::RotateRight((*addr ^ tmp), 9);
 
   tmp = ((*addr ^ *val) & 0x00FF00FF);
   *val ^= tmp;
-  *addr = _rotl((*addr ^ tmp), 6);
+  *addr = Common::RotateLeft((*addr ^ tmp), 6);
 
   tmp = ((*addr ^ *val) & 0x33333333);
   *val ^= tmp;
-  *addr = _rotl((*addr ^ tmp), 0x12);
+  *addr = Common::RotateLeft((*addr ^ tmp), 0x12);
 
   tmp = ((*addr ^ *val) & 0xFFFF0000);
   *val ^= tmp;
-  *addr = _rotl((*addr ^ tmp), 0x14);
+  *addr = Common::RotateLeft((*addr ^ tmp), 0x14);
 
   tmp = ((*addr ^ *val) & 0xF0F0F0F0);
   *val ^= tmp;
-  *addr = _rotr((*addr ^ tmp), 4);
+  *addr = Common::RotateRight((*addr ^ tmp), 4);
 }
 
-static void decryptcode(u32* seeds, u32* code)
+static void decryptcode(const u32* seeds, u32* code)
 {
   u32 addr, val;
   u32 tmp, tmp2;
@@ -307,13 +311,13 @@ static void decryptcode(u32* seeds, u32* code)
   unscramble1(&addr, &val);
   while (i < 32)
   {
-    tmp = (_rotr(val, 4) ^ seeds[i++]);
+    tmp = (Common::RotateRight(val, 4) ^ seeds[i++]);
     tmp2 = (val ^ seeds[i++]);
     addr ^= (table6[tmp & 0x3F] ^ table4[(tmp >> 8) & 0x3F] ^ table2[(tmp >> 16) & 0x3F] ^
              table0[(tmp >> 24) & 0x3F] ^ table7[tmp2 & 0x3F] ^ table5[(tmp2 >> 8) & 0x3F] ^
              table3[(tmp2 >> 16) & 0x3F] ^ table1[(tmp2 >> 24) & 0x3F]);
 
-    tmp = (_rotr(addr, 4) ^ seeds[i++]);
+    tmp = (Common::RotateRight(addr, 4) ^ seeds[i++]);
     tmp2 = (addr ^ seeds[i++]);
     val ^= (table6[tmp & 0x3F] ^ table4[(tmp >> 8) & 0x3F] ^ table2[(tmp >> 16) & 0x3F] ^
             table0[(tmp >> 24) & 0x3F] ^ table7[tmp2 & 0x3F] ^ table5[(tmp2 >> 8) & 0x3F] ^
@@ -467,7 +471,8 @@ void DecryptARCode(std::vector<std::string> vCodes, std::vector<AREntry>* ops)
     std::transform(s.begin(), s.end(), s.begin(), toupper);
   }
 
-  if ((ret = alphatobin(uCodes, vCodes, (int)vCodes.size())))
+  ret = alphatobin(uCodes, vCodes, (int)vCodes.size());
+  if (ret)
   {
     // Return value is index + 1, 0 being the success flag value.
     PanicAlertT("Action Replay Code Decryption Error:\nParity Check Failed\n\nCulprit Code:\n%s",

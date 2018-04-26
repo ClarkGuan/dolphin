@@ -11,16 +11,18 @@
 
 #include "VideoBackends/Vulkan/CommandBufferManager.h"
 #include "VideoBackends/Vulkan/Constants.h"
-#include "VideoBackends/Vulkan/FramebufferManager.h"
 #include "VideoBackends/Vulkan/ObjectCache.h"
+#include "VideoBackends/Vulkan/ShaderCache.h"
 #include "VideoBackends/Vulkan/StreamBuffer.h"
 #include "VideoBackends/Vulkan/Util.h"
+#include "VideoBackends/Vulkan/VKPipeline.h"
 #include "VideoBackends/Vulkan/VertexFormat.h"
 #include "VideoBackends/Vulkan/VulkanContext.h"
 
 #include "VideoCommon/GeometryShaderManager.h"
 #include "VideoCommon/PixelShaderManager.h"
 #include "VideoCommon/Statistics.h"
+#include "VideoCommon/VertexLoaderManager.h"
 #include "VideoCommon/VertexShaderManager.h"
 #include "VideoCommon/VideoConfig.h"
 
@@ -35,7 +37,7 @@ StateTracker* StateTracker::GetInstance()
 
 bool StateTracker::CreateInstance()
 {
-  _assert_(!s_state_tracker);
+  ASSERT(!s_state_tracker);
   s_state_tracker = std::make_unique<StateTracker>();
   if (!s_state_tracker->Initialize())
   {
@@ -52,39 +54,11 @@ void StateTracker::DestroyInstance()
 
 bool StateTracker::Initialize()
 {
-  // Set some sensible defaults
-  m_pipeline_state.rasterization_state.cull_mode = VK_CULL_MODE_NONE;
-  m_pipeline_state.rasterization_state.per_sample_shading = VK_FALSE;
-  m_pipeline_state.rasterization_state.depth_clamp = VK_FALSE;
-  m_pipeline_state.depth_stencil_state.test_enable = VK_TRUE;
-  m_pipeline_state.depth_stencil_state.write_enable = VK_TRUE;
-  m_pipeline_state.depth_stencil_state.compare_op = VK_COMPARE_OP_LESS;
-  m_pipeline_state.blend_state.blend_enable = VK_FALSE;
-  m_pipeline_state.blend_state.blend_op = VK_BLEND_OP_ADD;
-  m_pipeline_state.blend_state.src_blend = VK_BLEND_FACTOR_ONE;
-  m_pipeline_state.blend_state.dst_blend = VK_BLEND_FACTOR_ZERO;
-  m_pipeline_state.blend_state.alpha_blend_op = VK_BLEND_OP_ADD;
-  m_pipeline_state.blend_state.src_alpha_blend = VK_BLEND_FACTOR_ONE;
-  m_pipeline_state.blend_state.dst_alpha_blend = VK_BLEND_FACTOR_ZERO;
-  m_pipeline_state.blend_state.logic_op_enable = VK_FALSE;
-  m_pipeline_state.blend_state.logic_op = VK_LOGIC_OP_CLEAR;
-  m_pipeline_state.blend_state.write_mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-
-  // Enable depth clamping if supported by driver.
-  if (g_ActiveConfig.backend_info.bSupportsDepthClamp)
-    m_pipeline_state.rasterization_state.depth_clamp = VK_TRUE;
-
-  // BBox is disabled by default.
-  m_pipeline_state.pipeline_layout = g_object_cache->GetPipelineLayout(PIPELINE_LAYOUT_STANDARD);
-  m_num_active_descriptor_sets = NUM_GX_DRAW_DESCRIPTOR_SETS;
-  m_bbox_enabled = false;
-
   // Initialize all samplers to point by default
   for (size_t i = 0; i < NUM_PIXEL_SHADER_SAMPLERS; i++)
   {
     m_bindings.ps_samplers[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    m_bindings.ps_samplers[i].imageView = VK_NULL_HANDLE;
+    m_bindings.ps_samplers[i].imageView = g_object_cache->GetDummyImageView();
     m_bindings.ps_samplers[i].sampler = g_object_cache->GetPointSampler();
   }
 
@@ -118,93 +92,6 @@ bool StateTracker::Initialize()
   return true;
 }
 
-void StateTracker::LoadPipelineUIDCache()
-{
-  class PipelineInserter final : public LinearDiskCacheReader<SerializedPipelineUID, u32>
-  {
-  public:
-    explicit PipelineInserter(StateTracker* this_ptr_) : this_ptr(this_ptr_) {}
-    void Read(const SerializedPipelineUID& key, const u32* value, u32 value_size)
-    {
-      this_ptr->PrecachePipelineUID(key);
-    }
-
-  private:
-    StateTracker* this_ptr;
-  };
-
-  std::string filename = g_object_cache->GetDiskCacheFileName("pipeline-uid");
-  PipelineInserter inserter(this);
-
-  // OpenAndRead calls Close() first, which will flush all data to disk when reloading.
-  // This assertion must hold true, otherwise data corruption will result.
-  m_uid_cache.OpenAndRead(filename, inserter);
-}
-
-void StateTracker::AppendToPipelineUIDCache(const PipelineInfo& info)
-{
-  SerializedPipelineUID sinfo;
-  sinfo.blend_state_bits = info.blend_state.bits;
-  sinfo.rasterizer_state_bits = info.rasterization_state.bits;
-  sinfo.depth_stencil_state_bits = info.depth_stencil_state.bits;
-  sinfo.vertex_decl = m_pipeline_state.vertex_format->GetVertexDeclaration();
-  sinfo.vs_uid = m_vs_uid;
-  sinfo.gs_uid = m_gs_uid;
-  sinfo.ps_uid = m_ps_uid;
-  sinfo.primitive_topology = info.primitive_topology;
-
-  u32 dummy_value = 0;
-  m_uid_cache.Append(sinfo, &dummy_value, 1);
-}
-
-bool StateTracker::PrecachePipelineUID(const SerializedPipelineUID& uid)
-{
-  PipelineInfo pinfo = {};
-
-  // Need to create the vertex declaration first, rather than deferring to when a game creates a
-  // vertex loader that uses this format, since we need it to create a pipeline.
-  pinfo.vertex_format = VertexFormat::GetOrCreateMatchingFormat(uid.vertex_decl);
-  pinfo.pipeline_layout = uid.ps_uid.GetUidData()->bounding_box ?
-                              g_object_cache->GetPipelineLayout(PIPELINE_LAYOUT_BBOX) :
-                              g_object_cache->GetPipelineLayout(PIPELINE_LAYOUT_STANDARD);
-  pinfo.vs = g_object_cache->GetVertexShaderForUid(uid.vs_uid);
-  if (pinfo.vs == VK_NULL_HANDLE)
-  {
-    WARN_LOG(VIDEO, "Failed to get vertex shader from cached UID.");
-    return false;
-  }
-  if (g_vulkan_context->SupportsGeometryShaders() && !uid.gs_uid.GetUidData()->IsPassthrough())
-  {
-    pinfo.gs = g_object_cache->GetGeometryShaderForUid(uid.gs_uid);
-    if (pinfo.gs == VK_NULL_HANDLE)
-    {
-      WARN_LOG(VIDEO, "Failed to get geometry shader from cached UID.");
-      return false;
-    }
-  }
-  pinfo.ps = g_object_cache->GetPixelShaderForUid(uid.ps_uid);
-  if (pinfo.ps == VK_NULL_HANDLE)
-  {
-    WARN_LOG(VIDEO, "Failed to get pixel shader from cached UID.");
-    return false;
-  }
-  pinfo.render_pass = m_load_render_pass;
-  pinfo.blend_state.bits = uid.blend_state_bits;
-  pinfo.rasterization_state.bits = uid.rasterizer_state_bits;
-  pinfo.depth_stencil_state.bits = uid.depth_stencil_state_bits;
-  pinfo.primitive_topology = uid.primitive_topology;
-
-  VkPipeline pipeline = g_object_cache->GetPipeline(pinfo);
-  if (pipeline == VK_NULL_HANDLE)
-  {
-    WARN_LOG(VIDEO, "Failed to get pipeline from cached UID.");
-    return false;
-  }
-
-  // We don't need to do anything with this pipeline, just make sure it exists.
-  return true;
-}
-
 void StateTracker::SetVertexBuffer(VkBuffer buffer, VkDeviceSize offset)
 {
   if (m_vertex_buffer == buffer && m_vertex_buffer_offset == offset)
@@ -229,15 +116,7 @@ void StateTracker::SetIndexBuffer(VkBuffer buffer, VkDeviceSize offset, VkIndexT
 void StateTracker::SetRenderPass(VkRenderPass load_render_pass, VkRenderPass clear_render_pass)
 {
   // Should not be changed within a render pass.
-  _assert_(!InRenderPass());
-
-  // The clear and load render passes are compatible, so we don't need to change our pipeline.
-  if (m_pipeline_state.render_pass != load_render_pass)
-  {
-    m_pipeline_state.render_pass = load_render_pass;
-    m_dirty_flags |= DIRTY_FLAG_PIPELINE;
-  }
-
+  ASSERT(!InRenderPass());
   m_load_render_pass = load_render_pass;
   m_clear_render_pass = clear_render_pass;
 }
@@ -245,105 +124,23 @@ void StateTracker::SetRenderPass(VkRenderPass load_render_pass, VkRenderPass cle
 void StateTracker::SetFramebuffer(VkFramebuffer framebuffer, const VkRect2D& render_area)
 {
   // Should not be changed within a render pass.
-  _assert_(!InRenderPass());
+  ASSERT(!InRenderPass());
   m_framebuffer = framebuffer;
   m_framebuffer_size = render_area;
 }
 
-void StateTracker::SetVertexFormat(const VertexFormat* vertex_format)
+void StateTracker::SetPipeline(const VKPipeline* pipeline)
 {
-  if (m_pipeline_state.vertex_format == vertex_format)
+  if (m_pipeline == pipeline)
     return;
 
-  m_pipeline_state.vertex_format = vertex_format;
+  const bool new_usage =
+      pipeline && (!m_pipeline || m_pipeline->GetUsage() != pipeline->GetUsage());
+
+  m_pipeline = pipeline;
   m_dirty_flags |= DIRTY_FLAG_PIPELINE;
-}
-
-void StateTracker::SetPrimitiveTopology(VkPrimitiveTopology primitive_topology)
-{
-  if (m_pipeline_state.primitive_topology == primitive_topology)
-    return;
-
-  m_pipeline_state.primitive_topology = primitive_topology;
-  m_dirty_flags |= DIRTY_FLAG_PIPELINE;
-}
-
-void StateTracker::DisableBackFaceCulling()
-{
-  if (m_pipeline_state.rasterization_state.cull_mode == VK_CULL_MODE_NONE)
-    return;
-
-  m_pipeline_state.rasterization_state.cull_mode = VK_CULL_MODE_NONE;
-  m_dirty_flags |= DIRTY_FLAG_PIPELINE;
-}
-
-void StateTracker::SetRasterizationState(const RasterizationState& state)
-{
-  if (m_pipeline_state.rasterization_state.bits == state.bits)
-    return;
-
-  m_pipeline_state.rasterization_state.bits = state.bits;
-  m_dirty_flags |= DIRTY_FLAG_PIPELINE;
-}
-
-void StateTracker::SetDepthStencilState(const DepthStencilState& state)
-{
-  if (m_pipeline_state.depth_stencil_state.bits == state.bits)
-    return;
-
-  m_pipeline_state.depth_stencil_state.bits = state.bits;
-  m_dirty_flags |= DIRTY_FLAG_PIPELINE;
-}
-
-void StateTracker::SetBlendState(const BlendState& state)
-{
-  if (m_pipeline_state.blend_state.bits == state.bits)
-    return;
-
-  m_pipeline_state.blend_state.bits = state.bits;
-  m_dirty_flags |= DIRTY_FLAG_PIPELINE;
-}
-
-bool StateTracker::CheckForShaderChanges(u32 gx_primitive_type)
-{
-  VertexShaderUid vs_uid = GetVertexShaderUid();
-  PixelShaderUid ps_uid = GetPixelShaderUid();
-
-  bool changed = false;
-
-  if (vs_uid != m_vs_uid)
-  {
-    m_pipeline_state.vs = g_object_cache->GetVertexShaderForUid(vs_uid);
-    m_vs_uid = vs_uid;
-    changed = true;
-  }
-
-  if (g_vulkan_context->SupportsGeometryShaders())
-  {
-    GeometryShaderUid gs_uid = GetGeometryShaderUid(gx_primitive_type);
-    if (gs_uid != m_gs_uid)
-    {
-      if (gs_uid.GetUidData()->IsPassthrough())
-        m_pipeline_state.gs = VK_NULL_HANDLE;
-      else
-        m_pipeline_state.gs = g_object_cache->GetGeometryShaderForUid(gs_uid);
-
-      m_gs_uid = gs_uid;
-      changed = true;
-    }
-  }
-
-  if (ps_uid != m_ps_uid)
-  {
-    m_pipeline_state.ps = g_object_cache->GetPixelShaderForUid(ps_uid);
-    m_ps_uid = ps_uid;
-    changed = true;
-  }
-
-  if (changed)
-    m_dirty_flags |= DIRTY_FLAG_PIPELINE;
-
-  return changed;
+  if (new_usage)
+    m_dirty_flags |= DIRTY_FLAG_ALL_DESCRIPTOR_SETS;
 }
 
 void StateTracker::UpdateVertexShaderConstants()
@@ -373,20 +170,6 @@ void StateTracker::UpdateVertexShaderConstants()
 
 void StateTracker::UpdateGeometryShaderConstants()
 {
-  // Skip updating geometry shader constants if it's not in use.
-  if (m_pipeline_state.gs == VK_NULL_HANDLE)
-  {
-    // However, if the buffer has changed, we can't skip the update, because then we'll
-    // try to include the now non-existant buffer in the descriptor set.
-    if (m_uniform_stream_buffer->GetBuffer() ==
-        m_bindings.uniform_buffer_bindings[UBO_DESCRIPTOR_SET_BINDING_GS].buffer)
-    {
-      return;
-    }
-
-    GeometryShaderManager::dirty = true;
-  }
-
   if (!GeometryShaderManager::dirty || !ReserveConstantStorage())
     return;
 
@@ -537,31 +320,6 @@ void StateTracker::SetSampler(size_t index, VkSampler sampler)
   m_dirty_flags |= DIRTY_FLAG_PS_SAMPLERS;
 }
 
-void StateTracker::SetBBoxEnable(bool enable)
-{
-  if (m_bbox_enabled == enable)
-    return;
-
-  // Change the number of active descriptor sets, as well as the pipeline layout
-  if (enable)
-  {
-    m_pipeline_state.pipeline_layout = g_object_cache->GetPipelineLayout(PIPELINE_LAYOUT_BBOX);
-    m_num_active_descriptor_sets = NUM_GX_DRAW_WITH_BBOX_DESCRIPTOR_SETS;
-
-    // The bbox buffer never changes, so we defer descriptor updates until it is enabled.
-    if (m_descriptor_sets[DESCRIPTOR_SET_BIND_POINT_STORAGE_OR_TEXEL_BUFFER] == VK_NULL_HANDLE)
-      m_dirty_flags |= DIRTY_FLAG_PS_SSBO;
-  }
-  else
-  {
-    m_pipeline_state.pipeline_layout = g_object_cache->GetPipelineLayout(PIPELINE_LAYOUT_STANDARD);
-    m_num_active_descriptor_sets = NUM_GX_DRAW_DESCRIPTOR_SETS;
-  }
-
-  m_dirty_flags |= DIRTY_FLAG_PIPELINE | DIRTY_FLAG_DESCRIPTOR_SET_BINDING;
-  m_bbox_enabled = enable;
-}
-
 void StateTracker::SetBBoxBuffer(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize range)
 {
   if (m_bindings.ps_ssbo.buffer == buffer && m_bindings.ps_ssbo.offset == offset &&
@@ -573,10 +331,7 @@ void StateTracker::SetBBoxBuffer(VkBuffer buffer, VkDeviceSize offset, VkDeviceS
   m_bindings.ps_ssbo.buffer = buffer;
   m_bindings.ps_ssbo.offset = offset;
   m_bindings.ps_ssbo.range = range;
-
-  // Defer descriptor update until bbox is actually enabled.
-  if (m_bbox_enabled)
-    m_dirty_flags |= DIRTY_FLAG_PS_SSBO;
+  m_dirty_flags |= DIRTY_FLAG_PS_SSBO;
 }
 
 void StateTracker::UnbindTexture(VkImageView view)
@@ -584,7 +339,7 @@ void StateTracker::UnbindTexture(VkImageView view)
   for (VkDescriptorImageInfo& it : m_bindings.ps_samplers)
   {
     if (it.imageView == view)
-      it.imageView = VK_NULL_HANDLE;
+      it.imageView = g_object_cache->GetDummyImageView();
   }
 }
 
@@ -592,10 +347,6 @@ void StateTracker::InvalidateDescriptorSets()
 {
   m_descriptor_sets.fill(VK_NULL_HANDLE);
   m_dirty_flags |= DIRTY_FLAG_ALL_DESCRIPTOR_SETS;
-
-  // Defer SSBO descriptor update until bbox is actually enabled.
-  if (!m_bbox_enabled)
-    m_dirty_flags &= ~DIRTY_FLAG_PS_SSBO;
 }
 
 void StateTracker::InvalidateConstants()
@@ -608,9 +359,8 @@ void StateTracker::InvalidateConstants()
 void StateTracker::SetPendingRebind()
 {
   m_dirty_flags |= DIRTY_FLAG_DYNAMIC_OFFSETS | DIRTY_FLAG_DESCRIPTOR_SET_BINDING |
-                   DIRTY_FLAG_PIPELINE_BINDING | DIRTY_FLAG_VERTEX_BUFFER |
-                   DIRTY_FLAG_INDEX_BUFFER | DIRTY_FLAG_VIEWPORT | DIRTY_FLAG_SCISSOR |
-                   DIRTY_FLAG_PIPELINE;
+                   DIRTY_FLAG_VERTEX_BUFFER | DIRTY_FLAG_INDEX_BUFFER | DIRTY_FLAG_VIEWPORT |
+                   DIRTY_FLAG_SCISSOR | DIRTY_FLAG_PIPELINE;
 }
 
 void StateTracker::BeginRenderPass()
@@ -642,9 +392,10 @@ void StateTracker::EndRenderPass()
   m_current_render_pass = VK_NULL_HANDLE;
 }
 
-void StateTracker::BeginClearRenderPass(const VkRect2D& area, const VkClearValue clear_values[2])
+void StateTracker::BeginClearRenderPass(const VkRect2D& area, const VkClearValue* clear_values,
+                                        u32 num_clear_values)
 {
-  _assert_(!InRenderPass());
+  ASSERT(!InRenderPass());
 
   m_current_render_pass = m_clear_render_pass;
   m_framebuffer_render_area = area;
@@ -654,7 +405,7 @@ void StateTracker::BeginClearRenderPass(const VkRect2D& area, const VkClearValue
                                       m_current_render_pass,
                                       m_framebuffer,
                                       m_framebuffer_render_area,
-                                      2,
+                                      num_clear_values,
                                       clear_values};
 
   vkCmdBeginRenderPass(g_command_buffer_mgr->GetCurrentCommandBuffer(), &begin_info,
@@ -681,16 +432,13 @@ void StateTracker::SetScissor(const VkRect2D& scissor)
 
 bool StateTracker::Bind(bool rebind_all /*= false*/)
 {
+  // Must have a pipeline.
+  if (!m_pipeline)
+    return false;
+
   // Check the render area if we were in a clear pass.
   if (m_current_render_pass == m_clear_render_pass && !IsViewportWithinRenderArea())
     EndRenderPass();
-
-  // Get new pipeline object if any parts have changed
-  if (m_dirty_flags & DIRTY_FLAG_PIPELINE && !UpdatePipeline())
-  {
-    ERROR_LOG(VIDEO, "Failed to get pipeline object, skipping draw");
-    return false;
-  }
 
   // Get a new descriptor set if any parts have changed
   if (m_dirty_flags & DIRTY_FLAG_ALL_DESCRIPTOR_SETS && !UpdateDescriptorSet())
@@ -718,20 +466,20 @@ bool StateTracker::Bind(bool rebind_all /*= false*/)
   if (m_dirty_flags & DIRTY_FLAG_INDEX_BUFFER || rebind_all)
     vkCmdBindIndexBuffer(command_buffer, m_index_buffer, m_index_buffer_offset, m_index_type);
 
-  if (m_dirty_flags & DIRTY_FLAG_PIPELINE_BINDING || rebind_all)
-    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline_object);
+  if (m_dirty_flags & DIRTY_FLAG_PIPELINE || rebind_all)
+    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline->GetVkPipeline());
 
   if (m_dirty_flags & DIRTY_FLAG_DESCRIPTOR_SET_BINDING || rebind_all)
   {
     vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            m_pipeline_state.pipeline_layout, 0, m_num_active_descriptor_sets,
+                            m_pipeline->GetVkPipelineLayout(), 0, m_num_active_descriptor_sets,
                             m_descriptor_sets.data(), NUM_UBO_DESCRIPTOR_SET_BINDINGS,
                             m_bindings.uniform_buffer_offsets.data());
   }
   else if (m_dirty_flags & DIRTY_FLAG_DYNAMIC_OFFSETS)
   {
     vkCmdBindDescriptorSets(
-        command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline_state.pipeline_layout,
+        command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline->GetVkPipelineLayout(),
         DESCRIPTOR_SET_BIND_POINT_UNIFORM_BUFFERS, 1,
         &m_descriptor_sets[DESCRIPTOR_SET_BIND_POINT_UNIFORM_BUFFERS],
         NUM_UBO_DESCRIPTOR_SET_BINDINGS, m_bindings.uniform_buffer_offsets.data());
@@ -871,34 +619,10 @@ void StateTracker::EndClearRenderPass()
   EndRenderPass();
 }
 
-VkPipeline StateTracker::GetPipelineAndCacheUID(const PipelineInfo& info)
-{
-  auto result = g_object_cache->GetPipelineWithCacheResult(info);
-
-  // Add to the UID cache if it is a new pipeline.
-  if (!result.second)
-    AppendToPipelineUIDCache(info);
-
-  return result.first;
-}
-
-bool StateTracker::UpdatePipeline()
-{
-  // We need at least a vertex and fragment shader
-  if (m_pipeline_state.vs == VK_NULL_HANDLE || m_pipeline_state.ps == VK_NULL_HANDLE)
-    return false;
-
-  // Grab a new pipeline object, this can fail.
-  m_pipeline_object = GetPipelineAndCacheUID(m_pipeline_state);
-
-  m_dirty_flags |= DIRTY_FLAG_PIPELINE_BINDING;
-  return m_pipeline_object != VK_NULL_HANDLE;
-}
-
 bool StateTracker::UpdateDescriptorSet()
 {
   const size_t MAX_DESCRIPTOR_WRITES = NUM_UBO_DESCRIPTOR_SET_BINDINGS +  // UBO
-                                       NUM_PIXEL_SHADER_SAMPLERS +        // Samplers
+                                       1 +                                // Samplers
                                        1;                                 // SSBO
   std::array<VkWriteDescriptorSet, MAX_DESCRIPTOR_WRITES> writes;
   u32 num_writes = 0;
@@ -907,13 +631,16 @@ bool StateTracker::UpdateDescriptorSet()
       m_descriptor_sets[DESCRIPTOR_SET_BIND_POINT_UNIFORM_BUFFERS] == VK_NULL_HANDLE)
   {
     VkDescriptorSetLayout layout =
-        g_object_cache->GetDescriptorSetLayout(DESCRIPTOR_SET_LAYOUT_UNIFORM_BUFFERS);
+        g_object_cache->GetDescriptorSetLayout(DESCRIPTOR_SET_LAYOUT_PER_STAGE_UNIFORM_BUFFERS);
     VkDescriptorSet set = g_command_buffer_mgr->AllocateDescriptorSet(layout);
     if (set == VK_NULL_HANDLE)
       return false;
 
     for (size_t i = 0; i < NUM_UBO_DESCRIPTOR_SET_BINDINGS; i++)
     {
+      if (i == UBO_DESCRIPTOR_SET_BINDING_GS && !g_vulkan_context->SupportsGeometryShaders())
+        continue;
+
       writes[num_writes++] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                               nullptr,
                               set,
@@ -939,29 +666,22 @@ bool StateTracker::UpdateDescriptorSet()
     if (set == VK_NULL_HANDLE)
       return false;
 
-    for (size_t i = 0; i < NUM_PIXEL_SHADER_SAMPLERS; i++)
-    {
-      const VkDescriptorImageInfo& info = m_bindings.ps_samplers[i];
-      if (info.imageView != VK_NULL_HANDLE && info.sampler != VK_NULL_HANDLE)
-      {
-        writes[num_writes++] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                nullptr,
-                                set,
-                                static_cast<uint32_t>(i),
-                                0,
-                                1,
-                                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                &info,
-                                nullptr,
-                                nullptr};
-      }
-    }
+    writes[num_writes++] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                            nullptr,
+                            set,
+                            0,
+                            0,
+                            static_cast<u32>(NUM_PIXEL_SHADER_SAMPLERS),
+                            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            m_bindings.ps_samplers.data(),
+                            nullptr,
+                            nullptr};
 
     m_descriptor_sets[DESCRIPTOR_SET_BIND_POINT_PIXEL_SHADER_SAMPLERS] = set;
     m_dirty_flags |= DIRTY_FLAG_DESCRIPTOR_SET_BINDING;
   }
 
-  if (m_bbox_enabled &&
+  if (g_vulkan_context->SupportsBoundingBox() &&
       (m_dirty_flags & DIRTY_FLAG_PS_SSBO ||
        m_descriptor_sets[DESCRIPTOR_SET_BIND_POINT_STORAGE_OR_TEXEL_BUFFER] == VK_NULL_HANDLE))
   {
@@ -989,6 +709,7 @@ bool StateTracker::UpdateDescriptorSet()
   if (num_writes > 0)
     vkUpdateDescriptorSets(g_vulkan_context->GetDevice(), num_writes, writes.data(), 0, nullptr);
 
+  m_num_active_descriptor_sets = NUM_GX_DRAW_DESCRIPTOR_SETS;
   return true;
 }
 

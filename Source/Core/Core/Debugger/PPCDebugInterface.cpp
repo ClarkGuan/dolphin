@@ -4,6 +4,7 @@
 
 #include "Core/Debugger/PPCDebugInterface.h"
 
+#include <cstddef>
 #include <string>
 
 #include "Common/GekkoDisassembler.h"
@@ -11,7 +12,6 @@
 
 #include "Core/Core.h"
 #include "Core/HW/DSP.h"
-#include "Core/PowerPC/JitCommon/JitBase.h"
 #include "Core/PowerPC/PPCSymbolDB.h"
 #include "Core/PowerPC/PowerPC.h"
 
@@ -28,11 +28,9 @@ std::string PPCDebugInterface::Disassemble(unsigned int address)
       return "(No RAM here)";
     }
 
-    u32 op = PowerPC::HostRead_Instruction(address);
+    const u32 op = PowerPC::HostRead_Instruction(address);
     std::string disasm = GekkoDisassembler::Disassemble(op, address);
-
-    UGeckoInstruction inst;
-    inst.hex = PowerPC::HostRead_U32(address);
+    const UGeckoInstruction inst{op};
 
     if (inst.OPCD == 1)
     {
@@ -88,7 +86,7 @@ unsigned int PPCDebugInterface::ReadInstruction(unsigned int address)
 
 bool PPCDebugInterface::IsAlive()
 {
-  return Core::IsRunning();
+  return Core::IsRunningAndStarted();
 }
 
 bool PPCDebugInterface::IsBreakpoint(unsigned int address)
@@ -129,9 +127,9 @@ void PPCDebugInterface::ClearAllMemChecks()
   PowerPC::memchecks.Clear();
 }
 
-bool PPCDebugInterface::IsMemCheck(unsigned int address)
+bool PPCDebugInterface::IsMemCheck(unsigned int address, size_t size)
 {
-  return PowerPC::memchecks.GetMemCheck(address) != nullptr;
+  return PowerPC::memchecks.GetMemCheck(address, size) != nullptr;
 }
 
 void PPCDebugInterface::ToggleMemCheck(unsigned int address, bool read, bool write, bool log)
@@ -156,7 +154,7 @@ void PPCDebugInterface::ToggleMemCheck(unsigned int address, bool read, bool wri
   }
 }
 
-void PPCDebugInterface::InsertBLR(unsigned int address, unsigned int value)
+void PPCDebugInterface::Patch(unsigned int address, unsigned int value)
 {
   PowerPC::HostWrite_U32(value, address);
   PowerPC::ScheduleInvalidateCacheThreadSafe(address);

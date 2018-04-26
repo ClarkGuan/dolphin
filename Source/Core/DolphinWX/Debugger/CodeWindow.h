@@ -85,11 +85,6 @@ public:
   void Load();
   void Save();
 
-  bool UseInterpreter();
-  bool BootToPause();
-  bool AutomaticStart();
-  bool JITNoBlockCache();
-  bool JITNoBlockLinking();
   bool JumpToAddress(u32 address);
 
   void Repopulate(bool refresh_codeview = true);
@@ -137,6 +132,9 @@ private:
   void OnSymbolsMenu(wxCommandEvent& event);
   void OnJitMenu(wxCommandEvent& event);
   void OnProfilerMenu(wxCommandEvent& event);
+
+  void OnBootToPauseSelected(wxCommandEvent& event);
+  void OnAutomaticStartSelected(wxCommandEvent& event);
 
   void OnSymbolListChange(wxCommandEvent& event);
   void OnCallstackListChange(wxCommandEvent& event);

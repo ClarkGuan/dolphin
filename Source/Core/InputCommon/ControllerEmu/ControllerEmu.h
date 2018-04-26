@@ -9,13 +9,16 @@
 #include <string>
 #include <vector>
 
+#include "Common/Common.h"
 #include "Common/IniFile.h"
-#include "InputCommon/ControlReference/ControlReference.h"
-#include "InputCommon/ControllerInterface/ControllerInterface.h"
+#include "InputCommon/ControllerInterface/Device.h"
+
+class ControllerInterface;
 
 #define sign(x) ((x) ? (x) < 0 ? -1 : 1 : 0)
 
-const char* const named_directions[] = {"Up", "Down", "Left", "Right"};
+const char* const named_directions[] = {_trans("Up"), _trans("Down"), _trans("Left"),
+                                        _trans("Right")};
 
 namespace ControllerEmu
 {
@@ -31,9 +34,13 @@ public:
 
   virtual void LoadConfig(IniFile::Section* sec, const std::string& base = "");
   virtual void SaveConfig(IniFile::Section* sec, const std::string& base = "");
-  void UpdateDefaultDevice();
 
-  void UpdateReferences(ControllerInterface& devi);
+  bool IsDefaultDeviceConnected() const;
+  const ciface::Core::DeviceQualifier& GetDefaultDevice() const;
+  void SetDefaultDevice(const std::string& device);
+  void SetDefaultDevice(ciface::Core::DeviceQualifier devq);
+
+  void UpdateReferences(const ControllerInterface& devi);
 
   // This returns a lock that should be held before calling State() on any control
   // references and GetState(), by extension. This prevents a race condition
@@ -43,6 +50,8 @@ public:
 
   std::vector<std::unique_ptr<ControlGroup>> groups;
 
-  ciface::Core::DeviceQualifier default_device;
+private:
+  ciface::Core::DeviceQualifier m_default_device;
+  bool m_default_device_is_connected{false};
 };
 }  // namespace ControllerEmu

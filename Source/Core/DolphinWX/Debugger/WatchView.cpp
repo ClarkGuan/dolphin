@@ -85,6 +85,7 @@ static wxString GetValueByRowCol(int row, int col)
     case 2:
       return _("Hexadecimal");
     case 3:
+      // i18n: The base 10 numeral system. Not related to non-integer numbers
       return _("Decimal");
     case 4:
       // i18n: Data type used in computing
@@ -277,7 +278,7 @@ void CWatchView::OnPopupMenu(wxCommandEvent& event)
 {
   // FIXME: This is terrible. Generate events instead.
   CFrame* cframe = wxGetApp().GetCFrame();
-  CCodeWindow* code_window = cframe->g_pCodeWindow;
+  CCodeWindow* code_window = cframe->m_code_window;
   CWatchWindow* watch_window = code_window->GetPanel<CWatchWindow>();
   CMemoryWindow* memory_window = code_window->GetPanel<CMemoryWindow>();
   CBreakPointWindow* breakpoint_window = code_window->GetPanel<CBreakPointWindow>();

@@ -17,11 +17,9 @@ namespace BPFunctions
 void FlushPipeline();
 void SetGenerationMode();
 void SetScissor();
+void SetViewport();
 void SetDepthMode();
 void SetBlendMode();
-void SetDitherMode();
-void SetLogicOpMode();
-void SetColorMask();
 void ClearScreen(const EFBRectangle& rc);
 void OnPixelFormatChange();
 void SetInterlacingMode(const BPCmd& bp);

@@ -15,9 +15,19 @@ AlsaSound::AlsaSound()
 {
 }
 
-bool AlsaSound::Start()
+AlsaSound::~AlsaSound()
 {
-  m_thread_status.store(ALSAThreadStatus::RUNNING);
+  m_thread_status.store(ALSAThreadStatus::STOPPING);
+
+  // Give the opportunity to the audio thread
+  // to realize we are stopping the emulation
+  cv.notify_one();
+  thread.join();
+}
+
+bool AlsaSound::Init()
+{
+  m_thread_status.store(ALSAThreadStatus::PAUSED);
   if (!AlsaInit())
   {
     m_thread_status.store(ALSAThreadStatus::STOPPED);
@@ -26,16 +36,6 @@ bool AlsaSound::Start()
 
   thread = std::thread(&AlsaSound::SoundLoop, this);
   return true;
-}
-
-void AlsaSound::Stop()
-{
-  m_thread_status.store(ALSAThreadStatus::STOPPING);
-
-  // Give the opportunity to the audio thread
-  // to realize we are stopping the emulation
-  cv.notify_one();
-  thread.join();
 }
 
 void AlsaSound::Update()
@@ -78,11 +78,11 @@ void AlsaSound::SoundLoop()
   m_thread_status.store(ALSAThreadStatus::STOPPED);
 }
 
-void AlsaSound::Clear(bool muted)
+bool AlsaSound::SetRunning(bool running)
 {
-  m_muted = muted;
-  m_thread_status.store(muted ? ALSAThreadStatus::PAUSED : ALSAThreadStatus::RUNNING);
+  m_thread_status.store(running ? ALSAThreadStatus::RUNNING : ALSAThreadStatus::PAUSED);
   cv.notify_one();  // Notify thread that status has changed
+  return true;
 }
 
 bool AlsaSound::AlsaInit()
@@ -186,8 +186,9 @@ bool AlsaSound::AlsaInit()
   // it is probably a bad idea to try to send more than one buffer of data
   if ((unsigned int)frames_to_deliver > buffer_size)
     frames_to_deliver = buffer_size;
-  NOTICE_LOG(AUDIO, "ALSA gave us a %ld sample \"hardware\" buffer with %d periods. Will send %d "
-                    "samples per fragments.",
+  NOTICE_LOG(AUDIO,
+             "ALSA gave us a %ld sample \"hardware\" buffer with %d periods. Will send %d "
+             "samples per fragments.",
              buffer_size, periods, frames_to_deliver);
 
   snd_pcm_sw_params_alloca(&swparams);

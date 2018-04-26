@@ -10,7 +10,6 @@
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
 #include "Core/HW/DSP.h"
-#include "Core/HW/GPFifo.h"
 #include "Core/HW/MMIO.h"
 #include "Core/HW/Memmap.h"
 #include "Core/PowerPC/JitArm64/Jit.h"
@@ -230,7 +229,6 @@ void JitArm64::SafeStoreFromReg(s32 dest, u32 value, s32 regOffset, u32 flags, s
 
   if (is_immediate && jo.optimizeGatherPipe && PowerPC::IsOptimizableGatherPipeWrite(imm_addr))
   {
-    ARM64Reg WA = INVALID_REG;
     int accessSize;
     if (flags & BackPatchInfo::FLAG_SIZE_32)
       accessSize = 32;
@@ -239,48 +237,23 @@ void JitArm64::SafeStoreFromReg(s32 dest, u32 value, s32 regOffset, u32 flags, s
     else
       accessSize = 8;
 
-    if (accessSize != 8)
-      WA = gpr.GetReg();
-
-    u64 base_ptr = std::min((u64)&GPFifo::m_gatherPipeCount, (u64)&GPFifo::m_gatherPipe);
-    u32 count_off = (u64)&GPFifo::m_gatherPipeCount - base_ptr;
-    u32 pipe_off = (u64)&GPFifo::m_gatherPipe - base_ptr;
-
-    MOVI2R(X30, base_ptr);
-
-    if (pipe_off)
-      ADD(X1, X30, pipe_off);
-
-    LDR(INDEX_UNSIGNED, W0, X30, count_off);
+    LDR(INDEX_UNSIGNED, X0, PPC_REG, PPCSTATE_OFF(gather_pipe_ptr));
     if (accessSize == 32)
     {
-      REV32(WA, RS);
-      if (pipe_off)
-        STR(WA, X1, ArithOption(X0));
-      else
-        STR(WA, X30, ArithOption(X0));
+      REV32(W1, RS);
+      STR(INDEX_POST, W1, X0, 4);
     }
     else if (accessSize == 16)
     {
-      REV16(WA, RS);
-      if (pipe_off)
-        STRH(WA, X1, ArithOption(X0));
-      else
-        STRH(WA, X30, ArithOption(X0));
+      REV16(W1, RS);
+      STRH(INDEX_POST, W1, X0, 2);
     }
     else
     {
-      if (pipe_off)
-        STRB(RS, X1, ArithOption(X0));
-      else
-        STRB(RS, X30, ArithOption(X0));
+      STRB(INDEX_POST, RS, X0, 1);
     }
-    ADD(W0, W0, accessSize >> 3);
-    STR(INDEX_UNSIGNED, W0, X30, count_off);
+    STR(INDEX_UNSIGNED, X0, PPC_REG, PPCSTATE_OFF(gather_pipe_ptr));
     js.fifoBytesSinceCheck += accessSize >> 3;
-
-    if (accessSize != 8)
-      gpr.Unlock(WA);
   }
   else if (is_immediate && PowerPC::IsOptimizableRAMAddress(imm_addr))
   {
@@ -374,12 +347,15 @@ void JitArm64::lXX(UGeckoInstruction inst)
   SafeLoadToReg(d, update ? a : (a ? a : -1), offsetReg, flags, offset, update);
 
   // LWZ idle skipping
-  if (inst.OPCD == 32 && MergeAllowedNextInstructions(2) &&
+  if (inst.OPCD == 32 && CanMergeNextInstructions(2) &&
       (inst.hex & 0xFFFF0000) == 0x800D0000 &&  // lwz r0, XXXX(r13)
       (js.op[1].inst.hex == 0x28000000 ||
        (SConfig::GetInstance().bWii && js.op[1].inst.hex == 0x2C000000)) &&  // cmpXwi r0,0
       js.op[2].inst.hex == 0x4182fff8)                                       // beq -8
   {
+    ARM64Reg WA = gpr.GetReg();
+    ARM64Reg XA = EncodeRegTo64(WA);
+
     // if it's still 0, we can wait until the next event
     FixupBranch noIdle = CBNZ(gpr.R(d));
 
@@ -390,8 +366,6 @@ void JitArm64::lXX(UGeckoInstruction inst)
     gpr.Flush(FLUSH_MAINTAIN_STATE);
     fpr.Flush(FLUSH_MAINTAIN_STATE);
 
-    ARM64Reg WA = gpr.GetReg();
-    ARM64Reg XA = EncodeRegTo64(WA);
     MOVP2R(XA, &CoreTiming::Idle);
     BLR(XA);
     gpr.Unlock(WA);
@@ -516,8 +490,8 @@ void JitArm64::lmw(UGeckoInstruction inst)
       LDP(INDEX_POST, EncodeRegTo64(RX1), EncodeRegTo64(RX3), XA, 16);
       REV32(EncodeRegTo64(RX1), EncodeRegTo64(RX1));
       REV32(EncodeRegTo64(RX3), EncodeRegTo64(RX3));
-      ORR(EncodeRegTo64(RX2), ZR, EncodeRegTo64(RX1), ArithOption(EncodeRegTo64(RX1), ST_LSR, 32));
-      ORR(EncodeRegTo64(RX4), ZR, EncodeRegTo64(RX3), ArithOption(EncodeRegTo64(RX3), ST_LSR, 32));
+      LSR(EncodeRegTo64(RX2), EncodeRegTo64(RX1), 32);
+      LSR(EncodeRegTo64(RX4), EncodeRegTo64(RX3), 32);
       i += 3;
     }
     else if (remaining >= 2)
@@ -644,7 +618,7 @@ void JitArm64::dcbt(UGeckoInstruction inst)
   // This is important because invalidating the block cache when we don't
   // need to is terrible for performance.
   // (Invalidating the jit block cache on dcbst is a heuristic.)
-  if (MergeAllowedNextInstructions(1) && js.op[1].inst.OPCD == 31 && js.op[1].inst.SUBOP10 == 54 &&
+  if (CanMergeNextInstructions(1) && js.op[1].inst.OPCD == 31 && js.op[1].inst.SUBOP10 == 54 &&
       js.op[1].inst.RA == inst.RA && js.op[1].inst.RB == inst.RB)
   {
     js.skipInstructions = 1;

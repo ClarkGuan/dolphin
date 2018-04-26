@@ -3,6 +3,7 @@
 // Refer to the license.txt file included.
 
 #include <asm/hwcap.h>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -11,6 +12,7 @@
 
 #include "Common/CPUDetect.h"
 #include "Common/CommonTypes.h"
+#include "Common/FileUtil.h"
 #include "Common/StringUtil.h"
 
 const char procfile[] = "/proc/cpuinfo";
@@ -21,7 +23,8 @@ static std::string GetCPUString()
   std::string cpu_string = "Unknown";
 
   std::string line;
-  std::ifstream file(procfile);
+  std::ifstream file;
+  File::OpenFStream(file, procfile, std::ios_base::in);
 
   if (!file)
     return cpu_string;
@@ -54,7 +57,7 @@ void CPUInfo::Detect()
   OS64bit = true;
   CPU64bit = true;
   Mode64bit = true;
-  vendor = VENDOR_ARM;
+  vendor = CPUVendor::ARM;
 
   // Get the information about the CPU
   num_cores = sysconf(_SC_NPROCESSORS_CONF);

@@ -48,36 +48,25 @@
 
 namespace OGL
 {
-struct XFBSource : public XFBSourceBase
-{
-  XFBSource(GLuint tex, int layers) : texture(tex), m_layers(layers) {}
-  ~XFBSource();
-
-  void CopyEFB(float Gamma) override;
-  void DecodeToTexture(u32 xfbAddr, u32 fbWidth, u32 fbHeight) override;
-
-  const GLuint texture;
-  const int m_layers;
-};
-
 class FramebufferManager : public FramebufferManagerBase
 {
 public:
-  FramebufferManager(int targetWidth, int targetHeight, int msaaSamples);
+  FramebufferManager(int targetWidth, int targetHeight, int msaaSamples,
+                     bool enable_stencil_buffer);
   ~FramebufferManager();
 
   // To get the EFB in texture form, these functions may have to transfer
   // the EFB to a resolved texture first.
   static GLuint GetEFBColorTexture(const EFBRectangle& sourceRc);
   static GLuint GetEFBDepthTexture(const EFBRectangle& sourceRc);
+  static void ResolveEFBStencilTexture();
 
   static GLuint GetEFBFramebuffer(unsigned int layer = 0)
   {
     return (layer < m_EFBLayers) ? m_efbFramebuffer[layer] : m_efbFramebuffer.back();
   }
-  static GLuint GetXFBFramebuffer() { return m_xfbFramebuffer; }
   // Resolved framebuffer is only used in MSAA mode.
-  static GLuint GetResolvedFramebuffer() { return m_resolvedFramebuffer[0]; }
+  static GLuint GetResolvedFramebuffer();
   static void SetFramebuffer(GLuint fb);
   static void FramebufferTexture(GLenum target, GLenum attachment, GLenum textarget, GLuint texture,
                                  GLint level);
@@ -100,15 +89,13 @@ public:
   static void ReinterpretPixelData(unsigned int convtype);
 
   static void PokeEFB(EFBAccessType type, const EfbPokeData* points, size_t num_points);
+  static bool HasStencilBuffer();
 
 private:
-  std::unique_ptr<XFBSourceBase> CreateXFBSource(unsigned int target_width,
-                                                 unsigned int target_height,
-                                                 unsigned int layers) override;
-  std::pair<u32, u32> GetTargetSize() const override;
-
-  void CopyToRealXFB(u32 xfbAddr, u32 fbStride, u32 fbHeight, const EFBRectangle& sourceRc,
-                     float Gamma) override;
+  GLuint CreateTexture(GLenum texture_type, GLenum internal_format, GLenum pixel_format,
+                       GLenum data_type);
+  void BindLayeredTexture(GLuint texture, const std::vector<GLuint>& framebuffers,
+                          GLenum attachment, GLenum texture_type);
 
   static int m_targetWidth;
   static int m_targetHeight;
@@ -116,11 +103,12 @@ private:
 
   static GLenum m_textureType;
   static std::vector<GLuint> m_efbFramebuffer;
-  static GLuint m_xfbFramebuffer;
   static GLuint m_efbColor;
   static GLuint m_efbDepth;
   static GLuint
       m_efbColorSwap;  // will be hot swapped with m_efbColor when reinterpreting EFB pixel formats
+
+  static bool m_enable_stencil_buffer;
 
   // Only used in MSAA mode, TODO: try to avoid them
   static std::vector<GLuint> m_resolvedFramebuffer;

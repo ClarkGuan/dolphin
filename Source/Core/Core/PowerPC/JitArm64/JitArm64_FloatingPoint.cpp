@@ -65,7 +65,7 @@ void JitArm64::fp_arith(UGeckoInstruction inst)
       m_float_emit.FMUL(size, VD, VA, VC);
       break;
     default:
-      _assert_msg_(DYNA_REC, 0, "fp_arith");
+      ASSERT_MSG(DYNA_REC, 0, "fp_arith");
       break;
     }
   }
@@ -110,7 +110,7 @@ void JitArm64::fp_arith(UGeckoInstruction inst)
       m_float_emit.FNMADD(VD, VA, VC, VB);
       break;  // fnmadd: "D = -(A*C + B)" vs "Vd = (-Va) + (-Vn)*Vm"
     default:
-      _assert_msg_(DYNA_REC, 0, "fp_arith");
+      ASSERT_MSG(DYNA_REC, 0, "fp_arith");
       break;
     }
   }
@@ -161,7 +161,7 @@ void JitArm64::fp_logic(UGeckoInstruction inst)
       m_float_emit.FABS(size, VD, VB);
       break;
     default:
-      _assert_msg_(DYNA_REC, 0, "fp_logic");
+      ASSERT_MSG(DYNA_REC, 0, "fp_logic");
       break;
     }
   }
@@ -189,7 +189,7 @@ void JitArm64::fp_logic(UGeckoInstruction inst)
       m_float_emit.FABS(reg_encoder(VD), reg_encoder(VB));
       break;
     default:
-      _assert_msg_(DYNA_REC, 0, "fp_logic");
+      ASSERT_MSG(DYNA_REC, 0, "fp_logic");
       break;
     }
   }
@@ -268,8 +268,8 @@ void JitArm64::fcmpX(UGeckoInstruction inst)
   ARM64Reg VA = reg_encoder(fpr.R(a, type));
   ARM64Reg VB = reg_encoder(fpr.R(b, type));
 
-  ARM64Reg WA = gpr.GetReg();
-  ARM64Reg XA = EncodeRegTo64(WA);
+  gpr.BindCRToRegister(crf, false);
+  ARM64Reg XA = gpr.CR(crf);
 
   FixupBranch pNaN, pLesser, pGreater;
   FixupBranch continue1, continue2, continue3;
@@ -293,7 +293,7 @@ void JitArm64::fcmpX(UGeckoInstruction inst)
 
   SetJumpTarget(pNaN);
 
-  MOVI2R(XA, PPCCRToInternal(CR_SO));
+  MOVI2R(XA, PowerPC::PPCCRToInternal(PowerPC::CR_SO));
 
   if (a != b)
   {
@@ -312,10 +312,6 @@ void JitArm64::fcmpX(UGeckoInstruction inst)
     SetJumpTarget(continue3);
   }
   SetJumpTarget(continue1);
-
-  STR(INDEX_UNSIGNED, XA, PPC_REG, PPCSTATE_OFF(cr_val[crf]));
-
-  gpr.Unlock(WA);
 }
 
 void JitArm64::fctiwzx(UGeckoInstruction inst)

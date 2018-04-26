@@ -2,22 +2,23 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include "Core/PowerPC/SignatureDB/CSVSignatureDB.h"
+
 #include <cstdio>
 #include <fstream>
 #include <sstream>
 
+#include "Common/File.h"
 #include "Common/FileUtil.h"
 #include "Common/Logging/Log.h"
 
-#include "Core/PowerPC/SignatureDB/CSVSignatureDB.h"
-
 // CSV separated with tabs
 // Checksum | Size | Symbol | [Object Location |] Object Name
-bool CSVSignatureDB::Load(const std::string& file_path, SignatureDB::FuncDB& database) const
+bool CSVSignatureDB::Load(const std::string& file_path)
 {
   std::string line;
   std::ifstream ifs;
-  OpenFStream(ifs, file_path, std::ios_base::in);
+  File::OpenFStream(ifs, file_path, std::ios_base::in);
 
   if (!ifs)
     return false;
@@ -32,7 +33,7 @@ bool CSVSignatureDB::Load(const std::string& file_path, SignatureDB::FuncDB& dat
     {
       if (std::getline(iss, symbol, '\t') && std::getline(iss, object_location, '\t'))
         std::getline(iss, object_name);
-      SignatureDB::DBFunc func;
+      HashSignatureDB::DBFunc func;
       func.name = symbol;
       func.size = size;
       // Doesn't have an object location
@@ -45,27 +46,27 @@ bool CSVSignatureDB::Load(const std::string& file_path, SignatureDB::FuncDB& dat
         func.object_location = object_location;
         func.object_name = object_name;
       }
-      database[checksum] = func;
+      m_database[checksum] = func;
     }
     else
     {
-      WARN_LOG(OSHLE, "CSV database failed to parse line %zu", i);
+      WARN_LOG(SYMBOLS, "CSV database failed to parse line %zu", i);
     }
   }
 
   return true;
 }
 
-bool CSVSignatureDB::Save(const std::string& file_path, const SignatureDB::FuncDB& database) const
+bool CSVSignatureDB::Save(const std::string& file_path) const
 {
   File::IOFile f(file_path, "w");
 
   if (!f)
   {
-    ERROR_LOG(OSHLE, "CSV database save failed");
+    ERROR_LOG(SYMBOLS, "CSV database save failed");
     return false;
   }
-  for (const auto& func : database)
+  for (const auto& func : m_database)
   {
     // The object name/location are unused for the time being.
     // To be implemented.
@@ -74,6 +75,6 @@ bool CSVSignatureDB::Save(const std::string& file_path, const SignatureDB::FuncD
             func.second.object_name.c_str());
   }
 
-  INFO_LOG(OSHLE, "CSV database save successful");
+  INFO_LOG(SYMBOLS, "CSV database save successful");
   return true;
 }

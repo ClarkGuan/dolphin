@@ -27,6 +27,7 @@ enum OS
   OS_ANDROID = (1 << 4),
   OS_FREEBSD = (1 << 5),
   OS_OPENBSD = (1 << 6),
+  OS_HAIKU = (1 << 7),
 };
 // Enum of known vendors
 // Tegra and Nvidia are separated out due to such substantial differences
@@ -124,13 +125,17 @@ enum Bug
   // Intel HD 4000 series isn't affected by the bug
   BUG_PRIMITIVE_RESTART,
   // Bug: unsync mapping doesn't work fine
-  // Affected devices: Nvidia driver
+  // Affected devices: Nvidia driver, ARM Mali
   // Started Version: -1
   // Ended Version: -1
   // The Nvidia driver (both Windows + Linux) doesn't like unsync mapping performance wise.
   // Because of their threaded behavior, they seem not to handle unsync mapping complete unsync,
   // in fact, they serialize the driver which adds a much bigger overhead.
   // Workaround: Use BufferSubData
+  // The Mali behavior is even worse: They just ignore the unsychronized flag and stall the GPU.
+  // Workaround: As they were even too lazy to implement asynchronous buffer updates,
+  //             BufferSubData stalls as well, so we have to use the slowest possible path:
+  //             Alloc one buffer per draw call with BufferData.
   // TODO: some Windows AMD driver/GPU combination seems also affected
   //       but as they all support pinned memory, it doesn't matter
   BUG_BROKEN_UNSYNC_MAPPING,
@@ -239,6 +244,39 @@ enum Bug
   // sometimes this happens in the kernel mode part of the driver resulting in a BSOD.
   // Disable dual-source blending support for now.
   BUG_BROKEN_DUAL_SOURCE_BLENDING,
+  // BUG: ImgTec GLSL shader compiler fails when negating the input to a bitwise operation
+  // Started version: 1.5
+  // Ended version: 1.8@4693462
+  // Shaders that do something like "variable <<= (-othervariable);" cause the shader to
+  // fail compilation with no useful diagnostic log. This can be worked around by storing
+  // the negated value to a temporary variable then using that in the bitwise op.
+  BUG_BROKEN_BITWISE_OP_NEGATION,
+
+  // BUG: The GPU shader code appears to be context-specific on Mesa/i965.
+  // This means that if we compiled the ubershaders asynchronously, they will be recompiled
+  // on the main thread the first time they are used, causing stutter. For now, disable
+  // asynchronous compilation on Mesa i965.
+  // Started version: -1
+  // Ended Version: -1
+  BUG_SHARED_CONTEXT_SHADER_COMPILATION,
+
+  // Bug: Fast clears on a MSAA framebuffer can cause NVIDIA GPU resets/lockups.
+  // Started version: -1
+  // Ended version: -1
+  // Calling vkCmdClearAttachments with a partial rect, or specifying a render area in a
+  // render pass with the load op set to clear can cause the GPU to lock up, or raise a
+  // bounds violation. This only occurs on MSAA framebuffers, and it seems when there are
+  // multiple clears in a single command buffer. Worked around by back to the slow path
+  // (drawing quads) when MSAA is enabled.
+  BUG_BROKEN_MSAA_CLEAR,
+
+  // BUG: Some vulkan implementations don't like the 'clear' loadop renderpass.
+  // For example, the ImgTec VK driver fails if you try to use a framebuffer with a different
+  // load/store op than that which it was created with, despite the spec saying they should be
+  // compatible.
+  // Started Version: 1.7
+  // Ended Version: 1.10
+  BUG_BROKEN_CLEAR_LOADOP_RENDERPASS,
 };
 
 // Initializes our internal vendor, device family, and driver version
@@ -247,7 +285,4 @@ void Init(API api, Vendor vendor, Driver driver, const double version, const Fam
 // Once Vendor and driver version is set, this will return if it has the applicable bug passed to
 // it.
 bool HasBug(Bug bug);
-
-// Attempts to map a PCI vendor ID to our Vendor enumeration
-Vendor TranslatePCIVendorID(u32 vendor_id);
 }

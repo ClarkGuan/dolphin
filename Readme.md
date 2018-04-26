@@ -15,7 +15,7 @@ Please read the [FAQ](https://dolphin-emu.org/docs/faq/) before using Dolphin.
 * OS
     * Windows (7 SP1 or higher is officially supported, but Vista SP2 might also work).
     * Linux.
-    * macOS (10.10 Yosemite or higher).
+    * macOS (10.9 Mavericks or higher).
     * Unix-like systems other than Linux are not officially supported but might work.
 * Processor
     * A CPU with SSE2 support.
@@ -29,7 +29,7 @@ Please read the [FAQ](https://dolphin-emu.org/docs/faq/) before using Dolphin.
 * OS
     * Android (5.0 Lollipop or higher).
 * Processor
-    * An ARM processor with support for 64-bit applications. (An Intel x86 processor could also work in theory, but no known x86 devices support 64-bit applications.)
+    * A processor with support for 64-bit applications (either ARMv8 or x86-64).
 * Graphics
     * A graphics processor that supports OpenGL ES 3.0 or higher. Performance varies heavily with [driver quality](https://dolphin-emu.org/blog/2013/09/26/dolphin-emulator-and-opengl-drivers-hall-fameshame/).
     * A graphics processor that supports standard desktop OpenGL features is recommended for best performance.
@@ -39,9 +39,12 @@ Dolphin can only be installed on devices that satisfy the above requirements. At
 ## Building for Windows
 
 Use the solution file `Source/dolphin-emu.sln` to build Dolphin on Windows.
-Visual Studio 2015 Update 2 is a hard requirement. Other compilers might be
+Visual Studio 2017 is a hard requirement. Other compilers might be
 able to build Dolphin on Windows but have not been tested and are not
-recommended to be used. Git and Windows 10 SDK 10.0.10586.0 must be installed.
+recommended to be used. Git and Windows 10 SDK 10.0.15063.0 must be installed when building.
+
+The "Release" solution configuration includes performance optimizations for the best user experience but complicates debugging Dolphin.
+The "Debug" solution configuration is significantly slower, more verbose and less permissive but makes debugging Dolphin easier.
 
 An installer can be created by using the `Installer.nsi` script in the
 Installer directory. This will require the Nullsoft Scriptable Install System
@@ -125,9 +128,9 @@ see where it's stored) if you don't plan to reinstall Dolphin.
 `Usage: Dolphin [-h] [-d] [-l] [-e <str>] [-b] [-V <str>] [-A <str>]`
 
 * -h, --help Show this help message
-* -d, --debugger Opens the debugger
-* -l, --logger Opens the logger
-* -e, --exec=<str> Loads the specified file (DOL,ELF,WAD,GCM,ISO)
+* -d, --debugger Show the debugger pane and additional View menu options
+* -l, --logger Open the logger
+* -e, --exec=<str> Load the specified file (DOL,ELF,WAD,GCM,ISO)
 * -b, --batch Exit Dolphin with emulator
 * -V, --video_backend=<str> Specify a video backend
 * -A, --audio_emulation=<str> Low level (LLE) or high level (HLE) audio
@@ -143,6 +146,7 @@ is intended for debugging purposes only.
 
 ## Sys Files
 
+* `wiitdb.txt`: Wii title database from [GameTDB](http://www.gametdb.com)
 * `totaldb.dsy`: Database of symbols (for devs only)
 * `GC/font_western.bin`: font dumps
 * `GC/font_japanese.bin`: font dumps
@@ -184,7 +188,8 @@ rules folder.
 A number of user writeable directories are created for caching purposes or for
 allowing the user to edit their contents. On macOS and Linux these folders are
 stored in `~/Library/Application Support/Dolphin/` and `~/.dolphin-emu`
-respectively. On Windows the user directory is stored in the `My Documents`
+respectively, but can be overwritten by setting the environment variable
+`DOLPHIN_EMU_USERPATH`. On Windows the user directory is stored in the `My Documents`
 folder by default, but there are various way to override this behavior:
 
 * Creating a file called `portable.txt` next to the Dolphin executable will

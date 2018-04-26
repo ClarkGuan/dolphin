@@ -6,6 +6,7 @@
 
 #include <string>
 #include "InputCommon/ControllerEmu/ControlGroup/ControlGroup.h"
+#include "InputCommon/ControllerInterface/Device.h"
 
 namespace ControllerEmu
 {
@@ -16,8 +17,6 @@ public:
 
   void GetState(ControlState* x, ControlState* y, ControlState* z, bool adjusted = false);
 
-  ControlState m_z = 0.0;
-
 private:
   // This is used to reduce the cursor speed for relative input
   // to something that makes sense with the default range.
@@ -25,5 +24,6 @@ private:
 
   ControlState m_x = 0.0;
   ControlState m_y = 0.0;
+  ControlState m_z = 0.0;
 };
 }  // namespace ControllerEmu

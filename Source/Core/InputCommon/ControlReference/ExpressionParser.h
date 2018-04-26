@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include "InputCommon/ControllerInterface/Device.h"
 
 namespace ciface
@@ -20,7 +21,7 @@ public:
   std::string control_name;
 
   ControlQualifier() : has_device(false) {}
-  operator std::string()
+  operator std::string() const
   {
     if (has_device)
       return device_qualifier.ToString() + ":" + control_name;
@@ -37,8 +38,8 @@ public:
       : container(container_), default_device(default_), is_input(is_input_)
   {
   }
-  std::shared_ptr<Core::Device> FindDevice(ControlQualifier qualifier);
-  Core::Device::Control* FindControl(ControlQualifier qualifier);
+  std::shared_ptr<Core::Device> FindDevice(ControlQualifier qualifier) const;
+  Core::Device::Control* FindControl(ControlQualifier qualifier) const;
 
 private:
   const Core::DeviceContainer& container;
@@ -46,27 +47,24 @@ private:
   bool is_input;
 };
 
-class ExpressionNode;
 class Expression
 {
 public:
-  Expression() : node(nullptr) {}
-  Expression(ExpressionNode* node);
-  ~Expression();
-  ControlState GetValue();
-  void SetValue(ControlState state);
-  int num_controls;
-  ExpressionNode* node;
+  virtual ~Expression() = default;
+  virtual ControlState GetValue() const = 0;
+  virtual void SetValue(ControlState state) = 0;
+  virtual int CountNumControls() const = 0;
+  virtual void UpdateReferences(ControlFinder& finder) = 0;
+  virtual operator std::string() const = 0;
 };
 
-enum ExpressionParseStatus
+enum class ParseStatus
 {
-  EXPRESSION_PARSE_SUCCESS = 0,
-  EXPRESSION_PARSE_SYNTAX_ERROR,
-  EXPRESSION_PARSE_NO_DEVICE,
+  Successful,
+  SyntaxError,
+  EmptyExpression,
 };
 
-ExpressionParseStatus ParseExpression(const std::string& expr, ControlFinder& finder,
-                                      Expression** expr_out);
+std::pair<ParseStatus, std::unique_ptr<Expression>> ParseExpression(const std::string& expr);
 }
 }

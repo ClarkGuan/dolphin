@@ -52,7 +52,7 @@ void VideoBackend::InitBackendInfo()
           vkGetPhysicalDeviceProperties(gpu, &properties);
           VkPhysicalDeviceFeatures features;
           vkGetPhysicalDeviceFeatures(gpu, &features);
-          VulkanContext::PopulateBackendInfoFeatures(&g_Config, gpu, features);
+          VulkanContext::PopulateBackendInfoFeatures(&g_Config, gpu, properties, features);
           VulkanContext::PopulateBackendInfoMultisampleModes(&g_Config, gpu, properties);
         }
       }
@@ -178,12 +178,32 @@ bool VideoBackend::Initialize(void* window_handle)
   // Since VulkanContext maintains a copy of the device features and properties, we can use this
   // to initialize the backend information, so that we don't need to enumerate everything again.
   VulkanContext::PopulateBackendInfoFeatures(&g_Config, g_vulkan_context->GetPhysicalDevice(),
+                                             g_vulkan_context->GetDeviceProperties(),
                                              g_vulkan_context->GetDeviceFeatures());
   VulkanContext::PopulateBackendInfoMultisampleModes(
       &g_Config, g_vulkan_context->GetPhysicalDevice(), g_vulkan_context->GetDeviceProperties());
 
   // With the backend information populated, we can now initialize videocommon.
   InitializeShared();
+
+  // Create command buffers. We do this separately because the other classes depend on it.
+  g_command_buffer_mgr = std::make_unique<CommandBufferManager>(g_Config.bBackendMultithreading);
+  if (!g_command_buffer_mgr->Initialize())
+  {
+    PanicAlert("Failed to create Vulkan command buffers");
+    Shutdown();
+    return false;
+  }
+
+  // Remaining classes are also dependent on object/shader cache.
+  g_object_cache = std::make_unique<ObjectCache>();
+  g_shader_cache = std::make_unique<ShaderCache>();
+  if (!g_object_cache->Initialize() || !g_shader_cache->Initialize())
+  {
+    PanicAlert("Failed to initialize Vulkan object cache.");
+    Shutdown();
+    return false;
+  }
 
   // Create swap chain. This has to be done early so that the target size is correct for auto-scale.
   std::unique_ptr<SwapChain> swap_chain;
@@ -193,111 +213,62 @@ bool VideoBackend::Initialize(void* window_handle)
     if (!swap_chain)
     {
       PanicAlert("Failed to create Vulkan swap chain.");
-      g_vulkan_context.reset();
-      ShutdownShared();
-      UnloadVulkanLibrary();
+      Shutdown();
       return false;
     }
   }
 
-  // Create command buffers. We do this separately because the other classes depend on it.
-  g_command_buffer_mgr = std::make_unique<CommandBufferManager>(g_Config.bBackendMultithreading);
-  if (!g_command_buffer_mgr->Initialize())
-  {
-    PanicAlert("Failed to create Vulkan command buffers");
-    g_command_buffer_mgr.reset();
-    g_vulkan_context.reset();
-    ShutdownShared();
-    UnloadVulkanLibrary();
-    return false;
-  }
-
   // Create main wrapper instances.
-  g_object_cache = std::make_unique<ObjectCache>();
   g_framebuffer_manager = std::make_unique<FramebufferManager>();
   g_renderer = std::make_unique<Renderer>(std::move(swap_chain));
+  g_vertex_manager = std::make_unique<VertexManager>();
+  g_texture_cache = std::make_unique<TextureCache>();
+  ::g_shader_cache = std::make_unique<VideoCommon::ShaderCache>();
+  g_perf_query = std::make_unique<PerfQuery>();
 
   // Invoke init methods on main wrapper classes.
   // These have to be done before the others because the destructors
   // for the remaining classes may call methods on these.
-  if (!g_object_cache->Initialize() || !FramebufferManager::GetInstance()->Initialize() ||
-      !StateTracker::CreateInstance() || !Renderer::GetInstance()->Initialize())
+  if (!StateTracker::CreateInstance() || !FramebufferManager::GetInstance()->Initialize() ||
+      !Renderer::GetInstance()->Initialize() || !VertexManager::GetInstance()->Initialize() ||
+      !TextureCache::GetInstance()->Initialize() || !PerfQuery::GetInstance()->Initialize() ||
+      !::g_shader_cache->Initialize())
   {
     PanicAlert("Failed to initialize Vulkan classes.");
-    g_renderer.reset();
-    StateTracker::DestroyInstance();
-    g_framebuffer_manager.reset();
-    g_object_cache.reset();
-    g_command_buffer_mgr.reset();
-    g_vulkan_context.reset();
-    ShutdownShared();
-    UnloadVulkanLibrary();
+    Shutdown();
     return false;
   }
 
-  // Create remaining wrapper instances.
-  g_vertex_manager = std::make_unique<VertexManager>();
-  g_texture_cache = std::make_unique<TextureCache>();
-  g_perf_query = std::make_unique<PerfQuery>();
-  if (!VertexManager::GetInstance()->Initialize() || !TextureCache::GetInstance()->Initialize() ||
-      !PerfQuery::GetInstance()->Initialize())
-  {
-    PanicAlert("Failed to initialize Vulkan classes.");
-    g_perf_query.reset();
-    g_texture_cache.reset();
-    g_vertex_manager.reset();
-    g_renderer.reset();
-    StateTracker::DestroyInstance();
-    g_framebuffer_manager.reset();
-    g_object_cache.reset();
-    g_command_buffer_mgr.reset();
-    g_vulkan_context.reset();
-    ShutdownShared();
-    UnloadVulkanLibrary();
-    return false;
-  }
-
+  // Display the name so the user knows which device was actually created.
+  INFO_LOG(VIDEO, "Vulkan Device: %s", g_vulkan_context->GetDeviceProperties().deviceName);
   return true;
-}
-
-// This is called after Initialize() from the Core
-// Run from the graphics thread
-void VideoBackend::Video_Prepare()
-{
-  // Display the name so the user knows which device was actually created
-  OSD::AddMessage(StringFromFormat("Using physical adapter %s",
-                                   g_vulkan_context->GetDeviceProperties().deviceName)
-                      .c_str(),
-                  5000);
 }
 
 void VideoBackend::Shutdown()
 {
-  g_command_buffer_mgr->WaitForGPUIdle();
+  if (g_command_buffer_mgr)
+    g_command_buffer_mgr->WaitForGPUIdle();
 
+  if (::g_shader_cache)
+    ::g_shader_cache->Shutdown();
+
+  if (g_renderer)
+    g_renderer->Shutdown();
+
+  g_perf_query.reset();
+  ::g_shader_cache.reset();
+  g_texture_cache.reset();
+  g_vertex_manager.reset();
+  g_renderer.reset();
+  g_framebuffer_manager.reset();
+  StateTracker::DestroyInstance();
+  if (g_shader_cache)
+    g_shader_cache->Shutdown();
+  g_shader_cache.reset();
   g_object_cache.reset();
   g_command_buffer_mgr.reset();
   g_vulkan_context.reset();
-
-  UnloadVulkanLibrary();
-
   ShutdownShared();
-}
-
-void VideoBackend::Video_Cleanup()
-{
-  g_command_buffer_mgr->WaitForGPUIdle();
-
-  // Save all cached pipelines out to disk for next time.
-  g_object_cache->SavePipelineCache();
-
-  g_perf_query.reset();
-  g_texture_cache.reset();
-  g_vertex_manager.reset();
-  g_framebuffer_manager.reset();
-  StateTracker::DestroyInstance();
-  g_renderer.reset();
-
-  CleanupShared();
+  UnloadVulkanLibrary();
 }
 }

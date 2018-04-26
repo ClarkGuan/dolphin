@@ -10,11 +10,12 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <vector>
 
+#include "Common/Assert.h"
 #include "Common/Atomic.h"
 #include "Common/CommonTypes.h"
-#include "Common/FileUtil.h"
 #include "Common/GL/GLInterfaceBase.h"
 #include "Common/GL/GLUtil.h"
 #include "Common/Logging/LogManager.h"
@@ -22,36 +23,33 @@
 #include "Common/MsgHandler.h"
 #include "Common/StringUtil.h"
 
+#include "Core/Config/GraphicsSettings.h"
 #include "Core/Core.h"
 
 #include "VideoBackends/OGL/BoundingBox.h"
 #include "VideoBackends/OGL/FramebufferManager.h"
+#include "VideoBackends/OGL/OGLPipeline.h"
+#include "VideoBackends/OGL/OGLShader.h"
+#include "VideoBackends/OGL/OGLTexture.h"
 #include "VideoBackends/OGL/PostProcessing.h"
 #include "VideoBackends/OGL/ProgramShaderCache.h"
 #include "VideoBackends/OGL/RasterFont.h"
 #include "VideoBackends/OGL/SamplerCache.h"
+#include "VideoBackends/OGL/StreamBuffer.h"
 #include "VideoBackends/OGL/TextureCache.h"
 #include "VideoBackends/OGL/VertexManager.h"
 
-#include "VideoCommon/AVIDump.h"
 #include "VideoCommon/BPFunctions.h"
 #include "VideoCommon/DriverDetails.h"
 #include "VideoCommon/IndexGenerator.h"
 #include "VideoCommon/OnScreenDisplay.h"
 #include "VideoCommon/PixelEngine.h"
-#include "VideoCommon/PixelShaderManager.h"
 #include "VideoCommon/RenderState.h"
+#include "VideoCommon/ShaderGenCommon.h"
 #include "VideoCommon/VertexShaderManager.h"
 #include "VideoCommon/VideoBackendBase.h"
 #include "VideoCommon/VideoConfig.h"
 #include "VideoCommon/XFMemory.h"
-
-void VideoConfig::UpdateProjectionHack()
-{
-  ::UpdateProjectionHack(g_Config.iPhackvalue, g_Config.sPhackvalue);
-}
-
-static int s_max_texture_size = 0;
 
 namespace OGL
 {
@@ -63,9 +61,8 @@ static std::unique_ptr<RasterFont> s_raster_font;
 
 // 1 for no MSAA. Use s_MSAASamples > 1 to check for MSAA.
 static int s_MSAASamples = 1;
-static int s_last_multisamples = 1;
+static u32 s_last_multisamples = 1;
 static bool s_last_stereo_mode = false;
-static bool s_last_xfb_mode = false;
 
 static bool s_vsync;
 
@@ -84,6 +81,11 @@ static void APIENTRY ErrorCallback(GLenum source, GLenum type, GLuint id, GLenum
 {
   const char* s_source;
   const char* s_type;
+
+  // Performance - DualCore driver performance warning:
+  // DualCore application thread syncing with server thread
+  if (id == 0x200b0)
+    return;
 
   switch (source)
   {
@@ -320,6 +322,29 @@ static void InitDriverInfo()
     version = 100 * major + minor;
   }
   break;
+  case DriverDetails::VENDOR_IMGTEC:
+  {
+    // Example version string:
+    // "OpenGL ES 3.2 build 1.9@4850625"
+    // Ends up as "109.4850625" - "1.9" being the branch, "4850625" being the build's change ID
+    // The change ID only makes sense to compare within a branch
+    driver = DriverDetails::DRIVER_IMGTEC;
+    double gl_version;
+    int major, minor, change;
+    constexpr double change_scale = 10000000;
+    sscanf(g_ogl_config.gl_version, "OpenGL ES %lg build %d.%d@%d", &gl_version, &major, &minor,
+           &change);
+    version = 100 * major + minor;
+    if (change >= change_scale)
+    {
+      ERROR_LOG(VIDEO, "Version changeID overflow - change:%d scale:%f", change, change_scale);
+    }
+    else
+    {
+      version += static_cast<double>(change) / change_scale;
+    }
+  }
+  break;
   // We don't care about these
   default:
     break;
@@ -329,51 +354,16 @@ static void InitDriverInfo()
 
 // Init functions
 Renderer::Renderer()
+    : ::Renderer(static_cast<int>(std::max(GLInterface->GetBackBufferWidth(), 1u)),
+                 static_cast<int>(std::max(GLInterface->GetBackBufferHeight(), 1u)))
 {
   bool bSuccess = true;
-
-  // Init extension support.
-  if (!GLExtensions::Init())
-  {
-    // OpenGL 2.0 is required for all shader based drawings. There is no way to get this by
-    // extensions
-    PanicAlert("GPU: OGL ERROR: Does your video card support OpenGL 2.0?");
-    bSuccess = false;
-  }
 
   g_ogl_config.gl_vendor = (const char*)glGetString(GL_VENDOR);
   g_ogl_config.gl_renderer = (const char*)glGetString(GL_RENDERER);
   g_ogl_config.gl_version = (const char*)glGetString(GL_VERSION);
 
   InitDriverInfo();
-
-  if (GLExtensions::Version() < 300)
-  {
-    // integer vertex attributes require a gl3 only function
-    PanicAlert("GPU: OGL ERROR: Need OpenGL version 3.\n"
-               "GPU: Does your video card support OpenGL 3?");
-    bSuccess = false;
-  }
-
-  // check for the max vertex attributes
-  GLint numvertexattribs = 0;
-  glGetIntegerv(GL_MAX_VERTEX_ATTRIBS, &numvertexattribs);
-  if (numvertexattribs < 16)
-  {
-    PanicAlert("GPU: OGL ERROR: Number of attributes %d not enough.\n"
-               "GPU: Does your video card support OpenGL 2.x?",
-               numvertexattribs);
-    bSuccess = false;
-  }
-
-  // check the max texture width and height
-  GLint max_texture_size;
-  glGetIntegerv(GL_MAX_TEXTURE_SIZE, (GLint*)&max_texture_size);
-  if (max_texture_size < 1024)
-  {
-    PanicAlert("GL_MAX_TEXTURE_SIZE too small at %i - must be at least 1024.", max_texture_size);
-    bSuccess = false;
-  }
 
   if (GLInterface->GetMode() == GLInterfaceMode::MODE_OPENGL)
   {
@@ -448,7 +438,8 @@ Renderer::Renderer()
   g_Config.backend_info.bSupportsPrimitiveRestart =
       !DriverDetails::HasBug(DriverDetails::BUG_PRIMITIVE_RESTART) &&
       ((GLExtensions::Version() >= 310) || GLExtensions::Supports("GL_NV_primitive_restart"));
-  g_Config.backend_info.bSupportsBBox =
+  g_Config.backend_info.bSupportsBBox = true;
+  g_Config.backend_info.bSupportsFragmentStoresAndAtomics =
       GLExtensions::Supports("GL_ARB_shader_storage_buffer_object");
   g_Config.backend_info.bSupportsGSInstancing = GLExtensions::Supports("GL_ARB_gpu_shader5");
   g_Config.backend_info.bSupportsSSAA = GLExtensions::Supports("GL_ARB_gpu_shader5") &&
@@ -466,6 +457,7 @@ Renderer::Renderer()
        GLExtensions::Supports("GL_EXT_copy_image") ||
        GLExtensions::Supports("GL_OES_copy_image")) &&
       !DriverDetails::HasBug(DriverDetails::BUG_BROKEN_COPYIMAGE);
+  g_ogl_config.bSupportsTextureSubImage = GLExtensions::Supports("ARB_get_texture_sub_image");
 
   // Desktop OpenGL supports the binding layout if it supports 420pack
   // OpenGL ES 3.1 supports it implicitly without an extension
@@ -474,6 +466,12 @@ Renderer::Renderer()
 
   // Clip distance support is useless without a method to clamp the depth range
   g_Config.backend_info.bSupportsDepthClamp = GLExtensions::Supports("GL_ARB_depth_clamp");
+
+  // Desktop OpenGL supports bitfield manulipation and dynamic sampler indexing if it supports
+  // shader5. OpenGL ES 3.1 supports it implicitly without an extension
+  g_Config.backend_info.bSupportsBitfield = GLExtensions::Supports("GL_ARB_gpu_shader5");
+  g_Config.backend_info.bSupportsDynamicSamplerIndexing =
+      GLExtensions::Supports("GL_ARB_gpu_shader5");
 
   g_ogl_config.bSupportsGLSLCache = GLExtensions::Supports("GL_ARB_get_program_binary");
   g_ogl_config.bSupportsGLPinnedMemory = GLExtensions::Supports("GL_AMD_pinned_memory");
@@ -487,15 +485,20 @@ Renderer::Renderer()
   g_ogl_config.bSupportViewportFloat = GLExtensions::Supports("GL_ARB_viewport_array");
   g_ogl_config.bSupportsDebug =
       GLExtensions::Supports("GL_KHR_debug") || GLExtensions::Supports("GL_ARB_debug_output");
-  g_ogl_config.bSupports3DTextureStorage =
+  g_ogl_config.bSupportsTextureStorage = GLExtensions::Supports("GL_ARB_texture_storage");
+  g_ogl_config.bSupports3DTextureStorageMultisample =
       GLExtensions::Supports("GL_ARB_texture_storage_multisample") ||
       GLExtensions::Supports("GL_OES_texture_storage_multisample_2d_array");
-  g_ogl_config.bSupports2DTextureStorage =
+  g_ogl_config.bSupports2DTextureStorageMultisample =
       GLExtensions::Supports("GL_ARB_texture_storage_multisample");
-  g_ogl_config.bSupportsEarlyFragmentTests =
-      GLExtensions::Supports("GL_ARB_shader_image_load_store");
+  g_ogl_config.bSupportsImageLoadStore = GLExtensions::Supports("GL_ARB_shader_image_load_store");
   g_ogl_config.bSupportsConservativeDepth = GLExtensions::Supports("GL_ARB_conservative_depth");
   g_ogl_config.bSupportsAniso = GLExtensions::Supports("GL_EXT_texture_filter_anisotropic");
+  g_Config.backend_info.bSupportsComputeShaders = GLExtensions::Supports("GL_ARB_compute_shader");
+  g_Config.backend_info.bSupportsST3CTextures =
+      GLExtensions::Supports("GL_EXT_texture_compression_s3tc");
+  g_Config.backend_info.bSupportsBPTCTextures =
+      GLExtensions::Supports("GL_ARB_texture_compression_bptc");
 
   if (GLInterface->GetMode() == GLInterfaceMode::MODE_OPENGLES3)
   {
@@ -504,12 +507,12 @@ Renderer::Renderer()
             1 :
             GLExtensions::Supports("GL_EXT_geometry_point_size") ? 2 : 0;
     g_ogl_config.SupportedESTextureBuffer = GLExtensions::Supports("VERSION_GLES_3_2") ?
-                                                ES_TEXBUF_TYPE::TEXBUF_CORE :
+                                                EsTexbufType::TexbufCore :
                                                 GLExtensions::Supports("GL_OES_texture_buffer") ?
-                                                ES_TEXBUF_TYPE::TEXBUF_OES :
+                                                EsTexbufType::TexbufOes :
                                                 GLExtensions::Supports("GL_EXT_texture_buffer") ?
-                                                ES_TEXBUF_TYPE::TEXBUF_EXT :
-                                                ES_TEXBUF_TYPE::TEXBUF_NONE;
+                                                EsTexbufType::TexbufExt :
+                                                EsTexbufType::TexbufNone;
 
     g_ogl_config.bSupportsGLSLCache = true;
     g_ogl_config.bSupportsGLSync = true;
@@ -518,50 +521,74 @@ Renderer::Renderer()
     // depth clamping.
     g_Config.backend_info.bSupportsDepthClamp = false;
 
+    if (GLExtensions::Supports("GL_EXT_shader_framebuffer_fetch"))
+    {
+      g_ogl_config.SupportedFramebufferFetch = EsFbFetchType::FbFetchExt;
+    }
+    else if (GLExtensions::Supports("GL_ARM_shader_framebuffer_fetch"))
+    {
+      g_ogl_config.SupportedFramebufferFetch = EsFbFetchType::FbFetchArm;
+    }
+    else
+    {
+      g_ogl_config.SupportedFramebufferFetch = EsFbFetchType::FbFetchNone;
+    }
+    g_Config.backend_info.bSupportsFramebufferFetch =
+        g_ogl_config.SupportedFramebufferFetch != EsFbFetchType::FbFetchNone;
+
     if (GLExtensions::Version() == 300)
     {
-      g_ogl_config.eSupportedGLSLVersion = GLSLES_300;
+      g_ogl_config.eSupportedGLSLVersion = GlslEs300;
       g_ogl_config.bSupportsAEP = false;
+      g_ogl_config.bSupportsTextureStorage = true;
       g_Config.backend_info.bSupportsGeometryShaders = false;
     }
     else if (GLExtensions::Version() == 310)
     {
-      g_ogl_config.eSupportedGLSLVersion = GLSLES_310;
+      g_ogl_config.eSupportedGLSLVersion = GlslEs310;
       g_ogl_config.bSupportsAEP = GLExtensions::Supports("GL_ANDROID_extension_pack_es31a");
       g_Config.backend_info.bSupportsBindingLayout = true;
-      g_ogl_config.bSupportsEarlyFragmentTests = true;
+      g_ogl_config.bSupportsImageLoadStore = true;
       g_Config.backend_info.bSupportsGeometryShaders = g_ogl_config.bSupportsAEP;
+      g_Config.backend_info.bSupportsComputeShaders = true;
       g_Config.backend_info.bSupportsGSInstancing =
           g_Config.backend_info.bSupportsGeometryShaders && g_ogl_config.SupportedESPointSize > 0;
       g_Config.backend_info.bSupportsSSAA = g_ogl_config.bSupportsAEP;
-      g_Config.backend_info.bSupportsBBox = true;
+      g_Config.backend_info.bSupportsFragmentStoresAndAtomics = true;
       g_ogl_config.bSupportsMSAA = true;
-      g_ogl_config.bSupports2DTextureStorage = true;
-      if (g_ActiveConfig.iStereoMode > 0 && g_ActiveConfig.iMultisamples > 1 &&
-          !g_ogl_config.bSupports3DTextureStorage)
+      g_ogl_config.bSupportsTextureStorage = true;
+      g_ogl_config.bSupports2DTextureStorageMultisample = true;
+      g_Config.backend_info.bSupportsBitfield = true;
+      g_Config.backend_info.bSupportsDynamicSamplerIndexing = g_ogl_config.bSupportsAEP;
+      if (g_ActiveConfig.stereo_mode != StereoMode::Off && g_ActiveConfig.iMultisamples > 1 &&
+          !g_ogl_config.bSupports3DTextureStorageMultisample)
       {
         // GLES 3.1 can't support stereo rendering and MSAA
         OSD::AddMessage("MSAA Stereo rendering isn't supported by your GPU.", 10000);
-        g_ActiveConfig.iMultisamples = 1;
+        Config::SetCurrent(Config::GFX_MSAA, UINT32_C(1));
       }
     }
     else
     {
-      g_ogl_config.eSupportedGLSLVersion = GLSLES_320;
+      g_ogl_config.eSupportedGLSLVersion = GlslEs320;
       g_ogl_config.bSupportsAEP = GLExtensions::Supports("GL_ANDROID_extension_pack_es31a");
       g_Config.backend_info.bSupportsBindingLayout = true;
-      g_ogl_config.bSupportsEarlyFragmentTests = true;
+      g_ogl_config.bSupportsImageLoadStore = true;
       g_Config.backend_info.bSupportsGeometryShaders = true;
+      g_Config.backend_info.bSupportsComputeShaders = true;
       g_Config.backend_info.bSupportsGSInstancing = g_ogl_config.SupportedESPointSize > 0;
       g_Config.backend_info.bSupportsPaletteConversion = true;
       g_Config.backend_info.bSupportsSSAA = true;
-      g_Config.backend_info.bSupportsBBox = true;
+      g_Config.backend_info.bSupportsFragmentStoresAndAtomics = true;
       g_ogl_config.bSupportsCopySubImage = true;
       g_ogl_config.bSupportsGLBaseVertex = true;
       g_ogl_config.bSupportsDebug = true;
       g_ogl_config.bSupportsMSAA = true;
-      g_ogl_config.bSupports2DTextureStorage = true;
-      g_ogl_config.bSupports3DTextureStorage = true;
+      g_ogl_config.bSupportsTextureStorage = true;
+      g_ogl_config.bSupports2DTextureStorageMultisample = true;
+      g_ogl_config.bSupports3DTextureStorageMultisample = true;
+      g_Config.backend_info.bSupportsBitfield = true;
+      g_Config.backend_info.bSupportsDynamicSamplerIndexing = true;
     }
   }
   else
@@ -576,9 +603,8 @@ Renderer::Renderer()
     }
     else if (GLExtensions::Version() == 300)
     {
-      g_ogl_config.eSupportedGLSLVersion = GLSL_130;
-      g_ogl_config.bSupportsEarlyFragmentTests =
-          false;  // layout keyword is only supported on glsl150+
+      g_ogl_config.eSupportedGLSLVersion = Glsl130;
+      g_ogl_config.bSupportsImageLoadStore = false;  // layout keyword is only supported on glsl150+
       g_ogl_config.bSupportsConservativeDepth =
           false;  // layout keyword is only supported on glsl150+
       g_Config.backend_info.bSupportsGeometryShaders =
@@ -586,9 +612,8 @@ Renderer::Renderer()
     }
     else if (GLExtensions::Version() == 310)
     {
-      g_ogl_config.eSupportedGLSLVersion = GLSL_140;
-      g_ogl_config.bSupportsEarlyFragmentTests =
-          false;  // layout keyword is only supported on glsl150+
+      g_ogl_config.eSupportedGLSLVersion = Glsl140;
+      g_ogl_config.bSupportsImageLoadStore = false;  // layout keyword is only supported on glsl150+
       g_ogl_config.bSupportsConservativeDepth =
           false;  // layout keyword is only supported on glsl150+
       g_Config.backend_info.bSupportsGeometryShaders =
@@ -596,16 +621,36 @@ Renderer::Renderer()
     }
     else if (GLExtensions::Version() == 320)
     {
-      g_ogl_config.eSupportedGLSLVersion = GLSL_150;
+      g_ogl_config.eSupportedGLSLVersion = Glsl150;
     }
     else if (GLExtensions::Version() == 330)
     {
-      g_ogl_config.eSupportedGLSLVersion = GLSL_330;
+      g_ogl_config.eSupportedGLSLVersion = Glsl330;
+    }
+    else if (GLExtensions::Version() >= 430)
+    {
+      // TODO: We should really parse the GL_SHADING_LANGUAGE_VERSION token.
+      g_ogl_config.eSupportedGLSLVersion = Glsl430;
+      g_ogl_config.bSupportsTextureStorage = true;
+      g_ogl_config.bSupportsImageLoadStore = true;
+      g_Config.backend_info.bSupportsSSAA = true;
+
+      // Compute shaders are core in GL4.3.
+      g_Config.backend_info.bSupportsComputeShaders = true;
+      if (GLExtensions::Version() >= 450)
+        g_ogl_config.bSupportsTextureSubImage = true;
     }
     else
     {
-      g_ogl_config.eSupportedGLSLVersion = GLSL_400;
+      g_ogl_config.eSupportedGLSLVersion = Glsl400;
       g_Config.backend_info.bSupportsSSAA = true;
+
+      if (GLExtensions::Version() == 420)
+      {
+        // Texture storage and shader image load/store are core in GL4.2.
+        g_ogl_config.bSupportsTextureStorage = true;
+        g_ogl_config.bSupportsImageLoadStore = true;
+      }
     }
 
     // Desktop OpenGL can't have the Android Extension Pack
@@ -614,7 +659,22 @@ Renderer::Renderer()
 
   // Either method can do early-z tests. See PixelShaderGen for details.
   g_Config.backend_info.bSupportsEarlyZ =
-      g_ogl_config.bSupportsEarlyFragmentTests || g_ogl_config.bSupportsConservativeDepth;
+      g_ogl_config.bSupportsImageLoadStore || g_ogl_config.bSupportsConservativeDepth;
+
+  glGetIntegerv(GL_MAX_SAMPLES, &g_ogl_config.max_samples);
+  if (g_ogl_config.max_samples < 1 || !g_ogl_config.bSupportsMSAA)
+    g_ogl_config.max_samples = 1;
+
+  // We require texel buffers, image load store, and compute shaders to enable GPU texture decoding.
+  // If the driver doesn't expose the extensions, but supports GL4.3/GLES3.1, it will still be
+  // enabled in the version check below.
+  g_Config.backend_info.bSupportsGPUTextureDecoding =
+      g_Config.backend_info.bSupportsPaletteConversion &&
+      g_Config.backend_info.bSupportsComputeShaders && g_ogl_config.bSupportsImageLoadStore;
+
+  // Background compiling is supported only when shared contexts aren't broken.
+  g_Config.backend_info.bSupportsBackgroundCompiling =
+      !DriverDetails::HasBug(DriverDetails::BUG_SHARED_CONTEXT_SHADER_COMPILATION);
 
   if (g_ogl_config.bSupportsDebug)
   {
@@ -655,16 +715,25 @@ Renderer::Renderer()
     return;
   }
 
-  glGetIntegerv(GL_MAX_SAMPLES, &g_ogl_config.max_samples);
-  if (g_ogl_config.max_samples < 1 || !g_ogl_config.bSupportsMSAA)
-    g_ogl_config.max_samples = 1;
-
   g_Config.VerifyValidity();
   UpdateActiveConfig();
+
+  // Since we modify the config here, we need to update the last host bits, it may have changed.
+  m_last_host_config_bits = ShaderHostConfig::GetCurrent().bits;
 
   OSD::AddMessage(StringFromFormat("Video Info: %s, %s, %s", g_ogl_config.gl_vendor,
                                    g_ogl_config.gl_renderer, g_ogl_config.gl_version),
                   5000);
+
+  if (!g_ogl_config.bSupportsGLBufferStorage && !g_ogl_config.bSupportsGLPinnedMemory)
+  {
+    OSD::AddMessage(
+        StringFromFormat("Your OpenGL driver does not support %s_buffer_storage.",
+                         GLInterface->GetMode() == GLInterfaceMode::MODE_OPENGLES3 ? "EXT" : "ARB"),
+        60000);
+    OSD::AddMessage("This device's performance will be terrible.", 60000);
+    OSD::AddMessage("Please ask your device vendor for an updated OpenGL driver.", 60000);
+  }
 
   WARN_LOG(VIDEO, "Missing OGL Extensions: %s%s%s%s%s%s%s%s%s%s%s%s%s%s",
            g_ActiveConfig.backend_info.bSupportsDualSourceBlend ? "" : "DualSourceBlend ",
@@ -684,37 +753,23 @@ Renderer::Renderer()
   s_last_multisamples = g_ActiveConfig.iMultisamples;
   s_MSAASamples = s_last_multisamples;
 
-  s_last_stereo_mode = g_ActiveConfig.iStereoMode > 0;
-  s_last_xfb_mode = g_ActiveConfig.bUseRealXFB;
-
-  // Decide framebuffer size
-  s_backbuffer_width = static_cast<int>(std::max(GLInterface->GetBackBufferWidth(), 1u));
-  s_backbuffer_height = static_cast<int>(std::max(GLInterface->GetBackBufferHeight(), 1u));
+  s_last_stereo_mode = g_ActiveConfig.stereo_mode != StereoMode::Off;
 
   // Handle VSync on/off
   s_vsync = g_ActiveConfig.IsVSync();
   if (!DriverDetails::HasBug(DriverDetails::BUG_BROKEN_VSYNC))
     GLInterface->SwapInterval(s_vsync);
 
-  // TODO: Move these somewhere else?
-  FramebufferManagerBase::SetLastXfbWidth(MAX_XFB_WIDTH);
-  FramebufferManagerBase::SetLastXfbHeight(MAX_XFB_HEIGHT);
-
-  UpdateDrawRectangle();
-
-  s_last_efb_scale = g_ActiveConfig.iEFBScale;
-  CalculateTargetSize();
-
-  PixelShaderManager::SetEfbScaleChanged();
-
   // Because of the fixed framebuffer size we need to disable the resolution
   // options while running
-  g_Config.bRunning = true;
 
-  glStencilFunc(GL_ALWAYS, 0, 0);
-  glBlendFunc(GL_ONE, GL_ONE);
+  // The stencil is used for bounding box emulation when SSBOs are not available
+  glDisable(GL_STENCIL_TEST);
+  glStencilFunc(GL_ALWAYS, 1, 0xFF);
+  glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
 
-  glViewport(0, 0, GetTargetWidth(), GetTargetHeight());  // Reset The Current Viewport
+  // Reset The Current Viewport
+  glViewport(0, 0, GetTargetWidth(), GetTargetHeight());
   if (g_ActiveConfig.backend_info.bSupportsClipControl)
     glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
 
@@ -731,79 +786,94 @@ Renderer::Renderer()
 
   glPixelStorei(GL_UNPACK_ALIGNMENT, 4);  // 4-byte pixel alignment
 
-  glDisable(GL_STENCIL_TEST);
   glEnable(GL_SCISSOR_TEST);
-
   glScissor(0, 0, GetTargetWidth(), GetTargetHeight());
+  glBlendFunc(GL_ONE, GL_ONE);
   glBlendColor(0, 0, 0, 0.5f);
   glClearDepthf(1.0f);
 
   if (g_ActiveConfig.backend_info.bSupportsPrimitiveRestart)
-  {
-    if (GLInterface->GetMode() == GLInterfaceMode::MODE_OPENGLES3)
-    {
-      glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
-    }
-    else
-    {
-      if (GLExtensions::Version() >= 310)
-      {
-        glEnable(GL_PRIMITIVE_RESTART);
-        glPrimitiveRestartIndex(65535);
-      }
-      else
-      {
-        glEnableClientState(GL_PRIMITIVE_RESTART_NV);
-        glPrimitiveRestartIndexNV(65535);
-      }
-    }
-  }
+    GLUtil::EnablePrimitiveRestart();
   IndexGenerator::Init();
 
   UpdateActiveConfig();
   ClearEFBCache();
 }
 
-Renderer::~Renderer()
-{
-  FlushFrameDump();
-  FinishFrameData();
-  DestroyFrameDumpResources();
-}
+Renderer::~Renderer() = default;
 
 void Renderer::Shutdown()
 {
+  ::Renderer::Shutdown();
   g_framebuffer_manager.reset();
 
-  g_Config.bRunning = false;
   UpdateActiveConfig();
 
   s_raster_font.reset();
   m_post_processor.reset();
-
-  OpenGL_DeleteAttributelessVAO();
 }
 
 void Renderer::Init()
 {
   // Initialize the FramebufferManager
-  g_framebuffer_manager =
-      std::make_unique<FramebufferManager>(s_target_width, s_target_height, s_MSAASamples);
+  g_framebuffer_manager = std::make_unique<FramebufferManager>(
+      m_target_width, m_target_height, s_MSAASamples, BoundingBox::NeedsStencilBuffer());
+  m_current_framebuffer_width = m_target_width;
+  m_current_framebuffer_height = m_target_height;
 
   m_post_processor = std::make_unique<OpenGLPostProcessing>();
   s_raster_font = std::make_unique<RasterFont>();
+}
 
-  OpenGL_CreateAttributelessVAO();
+std::unique_ptr<AbstractTexture> Renderer::CreateTexture(const TextureConfig& config)
+{
+  return std::make_unique<OGLTexture>(config);
+}
+
+std::unique_ptr<AbstractStagingTexture> Renderer::CreateStagingTexture(StagingTextureType type,
+                                                                       const TextureConfig& config)
+{
+  return OGLStagingTexture::Create(type, config);
+}
+
+std::unique_ptr<AbstractFramebuffer>
+Renderer::CreateFramebuffer(const AbstractTexture* color_attachment,
+                            const AbstractTexture* depth_attachment)
+{
+  return OGLFramebuffer::Create(static_cast<const OGLTexture*>(color_attachment),
+                                static_cast<const OGLTexture*>(depth_attachment));
 }
 
 void Renderer::RenderText(const std::string& text, int left, int top, u32 color)
 {
-  u32 backbuffer_width = std::max(GLInterface->GetBackBufferWidth(), 1u);
-  u32 backbuffer_height = std::max(GLInterface->GetBackBufferHeight(), 1u);
+  int screen_width = m_backbuffer_width;
+  int screen_height = m_backbuffer_height;
+  if (screen_width >= 2000)
+  {
+    screen_width /= 2;
+    screen_height /= 2;
+  }
 
-  s_raster_font->printMultilineText(text, left * 2.0f / static_cast<float>(backbuffer_width) - 1.0f,
-                                    1.0f - top * 2.0f / static_cast<float>(backbuffer_height), 0,
-                                    backbuffer_width, backbuffer_height, color);
+  s_raster_font->printMultilineText(text, left * 2.0f / static_cast<float>(screen_width) - 1.0f,
+                                    1.0f - top * 2.0f / static_cast<float>(screen_height), 0,
+                                    screen_width, screen_height, color);
+}
+
+std::unique_ptr<AbstractShader> Renderer::CreateShaderFromSource(ShaderStage stage,
+                                                                 const char* source, size_t length)
+{
+  return OGLShader::CreateFromSource(stage, source, length);
+}
+
+std::unique_ptr<AbstractShader> Renderer::CreateShaderFromBinary(ShaderStage stage,
+                                                                 const void* data, size_t length)
+{
+  return nullptr;
+}
+
+std::unique_ptr<AbstractPipeline> Renderer::CreatePipeline(const AbstractPipelineConfig& config)
+{
+  return OGLPipeline::Create(config);
 }
 
 TargetRectangle Renderer::ConvertEFBRectangle(const EFBRectangle& rc)
@@ -816,20 +886,9 @@ TargetRectangle Renderer::ConvertEFBRectangle(const EFBRectangle& rc)
   return result;
 }
 
-// Function: This function handles the OpenGL glScissor() function
-// ----------------------------
-// Call browser: OpcodeDecoding.cpp ExecuteDisplayList > Decode() > LoadBPReg()
-//		case 0x52 > SetScissorRect()
-// ----------------------------
-// bpmem.scissorTL.x, y = 342x342
-// bpmem.scissorBR.x, y = 981x821
-// Renderer::GetTargetHeight() = the fixed ini file setting
-// donkopunchstania - it appears scissorBR is the bottom right pixel inside the scissor box
-// therefore the width and height are (scissorBR + 1) - scissorTL
-void Renderer::SetScissorRect(const EFBRectangle& rc)
+void Renderer::SetScissorRect(const MathUtil::Rectangle<int>& rc)
 {
-  TargetRectangle trc = ConvertEFBRectangle(rc);
-  glScissor(trc.left, trc.bottom, trc.GetWidth(), trc.GetHeight());
+  glScissor(rc.left, rc.bottom, rc.GetWidth(), rc.GetHeight());
 }
 
 void ClearEFBCache()
@@ -1056,12 +1115,12 @@ u16 Renderer::BBoxRead(int index)
   if (index < 2)
   {
     // left/right
-    value = value * EFB_WIDTH / s_target_width;
+    value = value * EFB_WIDTH / m_target_width;
   }
   else
   {
     // up/down -- we have to swap up and down
-    value = value * EFB_HEIGHT / s_target_height;
+    value = value * EFB_HEIGHT / m_target_height;
     value = EFB_HEIGHT - value - 1;
   }
   if (index & 1)
@@ -1077,68 +1136,35 @@ void Renderer::BBoxWrite(int index, u16 _value)
     value--;
   if (index < 2)
   {
-    value = value * s_target_width / EFB_WIDTH;
+    value = value * m_target_width / EFB_WIDTH;
   }
   else
   {
     index ^= 1;  // swap 2 and 3 for top/bottom
     value = EFB_HEIGHT - value - 1;
-    value = value * s_target_height / EFB_HEIGHT;
+    value = value * m_target_height / EFB_HEIGHT;
   }
 
   BoundingBox::Set(index, value);
 }
 
-void Renderer::SetViewport()
+void Renderer::SetViewport(float x, float y, float width, float height, float near_depth,
+                           float far_depth)
 {
-  // reversed gxsetviewport(xorig, yorig, width, height, nearz, farz)
-  // [0] = width/2
-  // [1] = height/2
-  // [2] = 16777215 * (farz - nearz)
-  // [3] = xorig + width/2 + 342
-  // [4] = yorig + height/2 + 342
-  // [5] = 16777215 * farz
-
-  int scissorXOff = bpmem.scissorOffset.x * 2;
-  int scissorYOff = bpmem.scissorOffset.y * 2;
-
-  // TODO: ceil, floor or just cast to int?
-  float X = EFBToScaledXf(xfmem.viewport.xOrig - xfmem.viewport.wd - (float)scissorXOff);
-  float Y = EFBToScaledYf((float)EFB_HEIGHT - xfmem.viewport.yOrig + xfmem.viewport.ht +
-                          (float)scissorYOff);
-  float Width = EFBToScaledXf(2.0f * xfmem.viewport.wd);
-  float Height = EFBToScaledYf(-2.0f * xfmem.viewport.ht);
-  float range = MathUtil::Clamp<float>(xfmem.viewport.zRange, -16777215.0f, 16777215.0f);
-  float min_depth =
-      MathUtil::Clamp<float>(xfmem.viewport.farZ - range, 0.0f, 16777215.0f) / 16777216.0f;
-  float max_depth = MathUtil::Clamp<float>(xfmem.viewport.farZ, 0.0f, 16777215.0f) / 16777216.0f;
-  if (Width < 0)
-  {
-    X += Width;
-    Width *= -1;
-  }
-  if (Height < 0)
-  {
-    Y += Height;
-    Height *= -1;
-  }
-
-  // Update the view port
+  // The x/y parameters here assume a upper-left origin. glViewport takes an offset from the
+  // lower-left of the framebuffer, so we must set y to the distance from the lower-left.
+  y = static_cast<float>(m_current_framebuffer_height) - y - height;
   if (g_ogl_config.bSupportViewportFloat)
   {
-    glViewportIndexedf(0, X, Y, Width, Height);
+    glViewportIndexedf(0, x, y, width, height);
   }
   else
   {
-    auto iceilf = [](float f) { return static_cast<GLint>(ceilf(f)); };
-    glViewport(iceilf(X), iceilf(Y), iceilf(Width), iceilf(Height));
+    auto iceilf = [](float f) { return static_cast<GLint>(std::ceil(f)); };
+    glViewport(iceilf(x), iceilf(y), iceilf(width), iceilf(height));
   }
 
-  // Set the reversed depth range. If we do depth clipping and depth range in the
-  // vertex shader we only need to ensure depth values don't exceed the maximum
-  // value supported by the console GPU. If not, we simply clamp the near/far values
-  // themselves to the maximum value as done above.
-  glDepthRangef(max_depth, min_depth);
+  glDepthRangef(near_depth, far_depth);
 }
 
 void Renderer::ClearScreen(const EFBRectangle& rc, bool colorEnable, bool alphaEnable, bool zEnable,
@@ -1176,22 +1202,34 @@ void Renderer::ClearScreen(const EFBRectangle& rc, bool colorEnable, bool alphaE
 void Renderer::BlitScreen(TargetRectangle src, TargetRectangle dst, GLuint src_texture,
                           int src_width, int src_height)
 {
-  if (g_ActiveConfig.iStereoMode == STEREO_SBS || g_ActiveConfig.iStereoMode == STEREO_TAB)
+  OpenGLPostProcessing* post_processor = static_cast<OpenGLPostProcessing*>(m_post_processor.get());
+  if (g_ActiveConfig.stereo_mode == StereoMode::SBS ||
+      g_ActiveConfig.stereo_mode == StereoMode::TAB)
   {
     TargetRectangle leftRc, rightRc;
 
     // Top-and-Bottom mode needs to compensate for inverted vertical screen coordinates.
-    if (g_ActiveConfig.iStereoMode == STEREO_TAB)
-      ConvertStereoRectangle(dst, rightRc, leftRc);
+    if (g_ActiveConfig.stereo_mode == StereoMode::TAB)
+      std::tie(rightRc, leftRc) = ConvertStereoRectangle(dst);
     else
-      ConvertStereoRectangle(dst, leftRc, rightRc);
+      std::tie(leftRc, rightRc) = ConvertStereoRectangle(dst);
 
-    m_post_processor->BlitFromTexture(src, leftRc, src_texture, src_width, src_height, 0);
-    m_post_processor->BlitFromTexture(src, rightRc, src_texture, src_width, src_height, 1);
+    post_processor->BlitFromTexture(src, leftRc, src_texture, src_width, src_height, 0);
+    post_processor->BlitFromTexture(src, rightRc, src_texture, src_width, src_height, 1);
+  }
+  else if (g_ActiveConfig.stereo_mode == StereoMode::QuadBuffer)
+  {
+    glDrawBuffer(GL_BACK_LEFT);
+    post_processor->BlitFromTexture(src, dst, src_texture, src_width, src_height, 0);
+
+    glDrawBuffer(GL_BACK_RIGHT);
+    post_processor->BlitFromTexture(src, dst, src_texture, src_width, src_height, 1);
+
+    glDrawBuffer(GL_BACK);
   }
   else
   {
-    m_post_processor->BlitFromTexture(src, dst, src_texture, src_width, src_height);
+    post_processor->BlitFromTexture(src, dst, src_texture, src_width, src_height, 0);
   }
 }
 
@@ -1208,47 +1246,99 @@ void Renderer::ReinterpretPixelData(unsigned int convtype)
   }
 }
 
-void Renderer::SetBlendMode(bool forceUpdate)
+void Renderer::SetFramebuffer(const AbstractFramebuffer* framebuffer)
 {
-  BlendingState state;
-  state.Generate(bpmem);
+  glBindFramebuffer(GL_FRAMEBUFFER, static_cast<const OGLFramebuffer*>(framebuffer)->GetFBO());
+  m_current_framebuffer = framebuffer;
+  m_current_framebuffer_width = framebuffer->GetWidth();
+  m_current_framebuffer_height = framebuffer->GetHeight();
+}
+
+void Renderer::SetAndDiscardFramebuffer(const AbstractFramebuffer* framebuffer)
+{
+  // EXT_discard_framebuffer could be used here to save bandwidth on tilers.
+  SetFramebuffer(framebuffer);
+}
+
+void Renderer::SetAndClearFramebuffer(const AbstractFramebuffer* framebuffer,
+                                      const ClearColor& color_value, float depth_value)
+{
+  SetFramebuffer(framebuffer);
+
+  // NOTE: This disturbs the current scissor/mask setting.
+  // This won't be an issue when we implement proper state tracking.
+  glDisable(GL_SCISSOR_TEST);
+  GLbitfield clear_mask = 0;
+  if (framebuffer->HasColorBuffer())
+  {
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glClearColor(color_value[0], color_value[1], color_value[2], color_value[3]);
+    clear_mask |= GL_COLOR_BUFFER_BIT;
+  }
+  if (framebuffer->HasDepthBuffer())
+  {
+    glDepthMask(GL_TRUE);
+    glClearDepth(depth_value);
+    clear_mask |= GL_DEPTH_BUFFER_BIT;
+  }
+  glClear(clear_mask);
+}
+
+void Renderer::ApplyBlendingState(const BlendingState state, bool force)
+{
+  if (!force && m_current_blend_state == state)
+    return;
 
   bool useDualSource =
-      g_ActiveConfig.backend_info.bSupportsDualSourceBlend &&
+      state.usedualsrc && g_ActiveConfig.backend_info.bSupportsDualSourceBlend &&
       (!DriverDetails::HasBug(DriverDetails::BUG_BROKEN_DUAL_SOURCE_BLENDING) || state.dstalpha);
+  // Only use shader blend if we need to and we don't support dual-source blending directly
+  bool useShaderBlend = !useDualSource && state.usedualsrc && state.dstalpha &&
+                        g_ActiveConfig.backend_info.bSupportsFramebufferFetch;
 
-  const GLenum src_factors[8] = {
-      GL_ZERO,
-      GL_ONE,
-      GL_DST_COLOR,
-      GL_ONE_MINUS_DST_COLOR,
-      useDualSource ? GL_SRC1_ALPHA : (GLenum)GL_SRC_ALPHA,
-      useDualSource ? GL_ONE_MINUS_SRC1_ALPHA : (GLenum)GL_ONE_MINUS_SRC_ALPHA,
-      GL_DST_ALPHA,
-      GL_ONE_MINUS_DST_ALPHA};
-  const GLenum dst_factors[8] = {
-      GL_ZERO,
-      GL_ONE,
-      GL_SRC_COLOR,
-      GL_ONE_MINUS_SRC_COLOR,
-      useDualSource ? GL_SRC1_ALPHA : (GLenum)GL_SRC_ALPHA,
-      useDualSource ? GL_ONE_MINUS_SRC1_ALPHA : (GLenum)GL_ONE_MINUS_SRC_ALPHA,
-      GL_DST_ALPHA,
-      GL_ONE_MINUS_DST_ALPHA};
-
-  if (state.blendenable)
+  if (useShaderBlend)
   {
-    GLenum equation = state.subtract ? GL_FUNC_REVERSE_SUBTRACT : GL_FUNC_ADD;
-    GLenum equationAlpha = state.subtractAlpha ? GL_FUNC_REVERSE_SUBTRACT : GL_FUNC_ADD;
-
-    glEnable(GL_BLEND);
-    glBlendEquationSeparate(equation, equationAlpha);
-    glBlendFuncSeparate(src_factors[state.srcfactor], dst_factors[state.dstfactor],
-                        src_factors[state.srcfactoralpha], dst_factors[state.dstfactoralpha]);
+    glDisable(GL_BLEND);
   }
   else
   {
-    glDisable(GL_BLEND);
+    const GLenum src_factors[8] = {GL_ZERO,
+                                   GL_ONE,
+                                   GL_DST_COLOR,
+                                   GL_ONE_MINUS_DST_COLOR,
+                                   useDualSource ? GL_SRC1_ALPHA : (GLenum)GL_SRC_ALPHA,
+                                   useDualSource ? GL_ONE_MINUS_SRC1_ALPHA :
+                                                   (GLenum)GL_ONE_MINUS_SRC_ALPHA,
+                                   GL_DST_ALPHA,
+                                   GL_ONE_MINUS_DST_ALPHA};
+    const GLenum dst_factors[8] = {GL_ZERO,
+                                   GL_ONE,
+                                   GL_SRC_COLOR,
+                                   GL_ONE_MINUS_SRC_COLOR,
+                                   useDualSource ? GL_SRC1_ALPHA : (GLenum)GL_SRC_ALPHA,
+                                   useDualSource ? GL_ONE_MINUS_SRC1_ALPHA :
+                                                   (GLenum)GL_ONE_MINUS_SRC_ALPHA,
+                                   GL_DST_ALPHA,
+                                   GL_ONE_MINUS_DST_ALPHA};
+
+    if (state.blendenable)
+    {
+      glEnable(GL_BLEND);
+    }
+    else
+    {
+      glDisable(GL_BLEND);
+    }
+
+    // Always call glBlendEquationSeparate and glBlendFuncSeparate, even when
+    // GL_BLEND is disabled, as a workaround for some bugs (possibly graphics
+    // driver issues?). See https://bugs.dolphin-emu.org/issues/10120 : "Sonic
+    // Adventure 2 Battle: graphics crash when loading first Dark level"
+    GLenum equation = state.subtract ? GL_FUNC_REVERSE_SUBTRACT : GL_FUNC_ADD;
+    GLenum equationAlpha = state.subtractAlpha ? GL_FUNC_REVERSE_SUBTRACT : GL_FUNC_ADD;
+    glBlendEquationSeparate(equation, equationAlpha);
+    glBlendFuncSeparate(src_factors[state.srcfactor], dst_factors[state.dstfactor],
+                        src_factors[state.srcfactoralpha], dst_factors[state.dstfactoralpha]);
   }
 
   const GLenum logic_op_codes[16] = {
@@ -1270,17 +1360,13 @@ void Renderer::SetBlendMode(bool forceUpdate)
     glDisable(GL_COLOR_LOGIC_OP);
   }
 
-  if (state.dither)
-    glEnable(GL_DITHER);
-  else
-    glDisable(GL_DITHER);
-
   glColorMask(state.colorupdate, state.colorupdate, state.colorupdate, state.alphaupdate);
+  m_current_blend_state = state;
 }
 
 // This function has the final picture. We adjust the aspect ratio here.
-void Renderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight,
-                        const EFBRectangle& rc, u64 ticks, float Gamma)
+void Renderer::SwapImpl(AbstractTexture* texture, const EFBRectangle& xfb_region, u64 ticks,
+                        float Gamma)
 {
   if (g_ogl_config.bSupportsDebug)
   {
@@ -1290,148 +1376,87 @@ void Renderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight,
       glDisable(GL_DEBUG_OUTPUT);
   }
 
-  if ((!XFBWrited && !g_ActiveConfig.RealXFBEnabled()) || !fbWidth || !fbHeight)
-  {
-    Core::Callback_VideoCopiedToXFB(false);
-    return;
-  }
+  auto* xfb_texture = static_cast<OGLTexture*>(texture);
 
-  u32 xfbCount = 0;
-  const XFBSourceBase* const* xfbSourceList =
-      FramebufferManager::GetXFBSource(xfbAddr, fbStride, fbHeight, &xfbCount);
-  if (g_ActiveConfig.VirtualXFBEnabled() && (!xfbSourceList || xfbCount == 0))
-  {
-    Core::Callback_VideoCopiedToXFB(false);
-    return;
-  }
+  TargetRectangle sourceRc = xfb_region;
+  sourceRc.top = xfb_region.GetHeight();
+  sourceRc.bottom = 0;
 
   ResetAPIState();
 
-  UpdateDrawRectangle();
-  TargetRectangle flipped_trc = GetTargetRectangle();
-
-  // Flip top and bottom for some reason; TODO: Fix the code to suck less?
-  std::swap(flipped_trc.top, flipped_trc.bottom);
-
-  // Copy the framebuffer to screen.
-  DrawFrame(0, flipped_trc, rc, xfbAddr, xfbSourceList, xfbCount, fbWidth, fbStride, fbHeight);
-
-  // The FlushFrameDump call here is necessary even after frame dumping is stopped.
-  // If left out, screenshots are "one frame" behind, as an extra frame is dumped and buffered.
-  FlushFrameDump();
-  if (IsFrameDumping())
-  {
-    // Currently, we only use the off-screen buffer as a frame dump source if full-resolution
-    // frame dumping is enabled, saving the need for an extra copy. In the future, this could
-    // be extended to be used for surfaceless contexts as well.
-    bool use_offscreen_buffer = g_ActiveConfig.bInternalResolutionFrameDumps;
-    if (use_offscreen_buffer)
-    {
-      // DumpFrameUsingFBO resets GL_FRAMEBUFFER, so change back to the window for drawing OSD.
-      DumpFrameUsingFBO(rc, xfbAddr, xfbSourceList, xfbCount, fbWidth, fbStride, fbHeight, ticks);
-    }
-    else
-    {
-      // GL_READ_FRAMEBUFFER is set by GL_FRAMEBUFFER in DrawFrame -> Draw{EFB,VirtualXFB,RealXFB}.
-      DumpFrame(flipped_trc, ticks);
-    }
-  }
-
-  // Finish up the current frame, print some stats
-
-  SetWindowSize(fbStride, fbHeight);
-
-  GLInterface->Update();  // just updates the render window position and the backbuffer size
-
-  bool xfbchanged = s_last_xfb_mode != g_ActiveConfig.bUseRealXFB;
-
-  if (FramebufferManagerBase::LastXfbWidth() != fbStride ||
-      FramebufferManagerBase::LastXfbHeight() != fbHeight)
-  {
-    xfbchanged = true;
-    unsigned int const last_w =
-        (fbStride < 1 || fbStride > MAX_XFB_WIDTH) ? MAX_XFB_WIDTH : fbStride;
-    unsigned int const last_h =
-        (fbHeight < 1 || fbHeight > MAX_XFB_HEIGHT) ? MAX_XFB_HEIGHT : fbHeight;
-    FramebufferManagerBase::SetLastXfbWidth(last_w);
-    FramebufferManagerBase::SetLastXfbHeight(last_h);
-  }
-
-  bool window_resized = false;
-  int window_width = static_cast<int>(std::max(GLInterface->GetBackBufferWidth(), 1u));
-  int window_height = static_cast<int>(std::max(GLInterface->GetBackBufferHeight(), 1u));
-  if (window_width != s_backbuffer_width || window_height != s_backbuffer_height ||
-      s_last_efb_scale != g_ActiveConfig.iEFBScale)
-  {
-    window_resized = true;
-    s_backbuffer_width = window_width;
-    s_backbuffer_height = window_height;
-    s_last_efb_scale = g_ActiveConfig.iEFBScale;
-  }
-
-  bool target_size_changed = CalculateTargetSize();
-  if (target_size_changed || xfbchanged || window_resized ||
-      (s_last_multisamples != g_ActiveConfig.iMultisamples) ||
-      (s_last_stereo_mode != (g_ActiveConfig.iStereoMode > 0)))
-  {
-    s_last_xfb_mode = g_ActiveConfig.bUseRealXFB;
-
-    UpdateDrawRectangle();
-
-    if (target_size_changed || s_last_multisamples != g_ActiveConfig.iMultisamples ||
-        s_last_stereo_mode != (g_ActiveConfig.iStereoMode > 0))
-    {
-      s_last_stereo_mode = g_ActiveConfig.iStereoMode > 0;
-      s_last_multisamples = g_ActiveConfig.iMultisamples;
-      s_MSAASamples = s_last_multisamples;
-
-      if (s_MSAASamples > 1 && s_MSAASamples > g_ogl_config.max_samples)
-      {
-        s_MSAASamples = g_ogl_config.max_samples;
-        OSD::AddMessage(StringFromFormat(
-                            "%d Anti Aliasing samples selected, but only %d supported by your GPU.",
-                            s_last_multisamples, g_ogl_config.max_samples),
-                        10000);
-      }
-
-      g_framebuffer_manager.reset();
-      g_framebuffer_manager =
-          std::make_unique<FramebufferManager>(s_target_width, s_target_height, s_MSAASamples);
-
-      PixelShaderManager::SetEfbScaleChanged();
-    }
-  }
-
-  // ---------------------------------------------------------------------
-  glEnable(GL_BLEND);
-  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-  // Reset viewport for drawing text
-  glViewport(0, 0, GLInterface->GetBackBufferWidth(), GLInterface->GetBackBufferHeight());
-
-  DrawDebugText();
-
   // Do our OSD callbacks
   OSD::DoCallbacks(OSD::CallbackType::OnFrame);
-  OSD::DrawMessages();
 
-#ifdef ANDROID
-  if (s_surface_needs_change.IsSet())
+  // Check if we need to render to a new surface.
+  CheckForSurfaceChange();
+  CheckForSurfaceResize();
+  UpdateDrawRectangle();
+  TargetRectangle flipped_trc = GetTargetRectangle();
+  std::swap(flipped_trc.top, flipped_trc.bottom);
+
+  // Skip screen rendering when running in headless mode.
+  if (!IsHeadless())
   {
-    GLInterface->UpdateHandle(s_new_surface_handle);
-    GLInterface->UpdateSurface();
-    s_new_surface_handle = nullptr;
-    s_surface_needs_change.Clear();
-    s_surface_changed.Set();
+    // Clear the framebuffer before drawing anything.
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    m_current_framebuffer = nullptr;
+    m_current_framebuffer_width = m_backbuffer_width;
+    m_current_framebuffer_height = m_backbuffer_height;
+
+    // Copy the framebuffer to screen.
+    BlitScreen(sourceRc, flipped_trc, xfb_texture->GetRawTexIdentifier(),
+               xfb_texture->GetConfig().width, xfb_texture->GetConfig().height);
+
+    // Render OSD messages.
+    glViewport(0, 0, m_backbuffer_width, m_backbuffer_height);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    DrawDebugText();
+    OSD::DrawMessages();
+
+    // Swap the back and front buffers, presenting the image.
+    GLInterface->Swap();
   }
-#endif
+  else
+  {
+    // Since we're not swapping in headless mode, ensure all commands are sent to the GPU.
+    // Otherwise the driver could batch several frames togehter.
+    glFlush();
+  }
 
-  // Copy the rendered frame to the real window
-  GLInterface->Swap();
+  // Was the size changed since the last frame?
+  bool target_size_changed = CalculateTargetSize();
+  bool stencil_buffer_enabled =
+      static_cast<FramebufferManager*>(g_framebuffer_manager.get())->HasStencilBuffer();
 
-  // Clear framebuffer
-  glClearColor(0, 0, 0, 0);
-  glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+  bool fb_needs_update = target_size_changed ||
+                         s_last_multisamples != g_ActiveConfig.iMultisamples ||
+                         stencil_buffer_enabled != BoundingBox::NeedsStencilBuffer() ||
+                         s_last_stereo_mode != (g_ActiveConfig.stereo_mode != StereoMode::Off);
+
+  if (fb_needs_update)
+  {
+    s_last_stereo_mode = g_ActiveConfig.stereo_mode != StereoMode::Off;
+    s_last_multisamples = g_ActiveConfig.iMultisamples;
+    s_MSAASamples = s_last_multisamples;
+
+    if (s_MSAASamples > 1 && s_MSAASamples > g_ogl_config.max_samples)
+    {
+      s_MSAASamples = g_ogl_config.max_samples;
+      OSD::AddMessage(
+          StringFromFormat("%d Anti Aliasing samples selected, but only %d supported by your GPU.",
+                           s_last_multisamples, g_ogl_config.max_samples),
+          10000);
+    }
+
+    g_framebuffer_manager.reset();
+    g_framebuffer_manager = std::make_unique<FramebufferManager>(
+        m_target_width, m_target_height, s_MSAASamples, BoundingBox::NeedsStencilBuffer());
+    BoundingBox::SetTargetSizeChanged(m_target_width, m_target_height);
+    UpdateDrawRectangle();
+  }
 
   if (s_vsync != g_ActiveConfig.IsVSync())
   {
@@ -1443,15 +1468,19 @@ void Renderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight,
   // Clean out old stuff from caches. It's not worth it to clean out the shader caches.
   g_texture_cache->Cleanup(frameCount);
 
-  // Render to the framebuffer.
-  FramebufferManager::SetFramebuffer(0);
-
   RestoreAPIState();
 
   g_Config.iSaveTargetId = 0;
 
+  int old_anisotropy = g_ActiveConfig.iMaxAnisotropy;
   UpdateActiveConfig();
   g_texture_cache->OnConfigChanged(g_ActiveConfig);
+
+  if (old_anisotropy != g_ActiveConfig.iMaxAnisotropy)
+    g_sampler_cache->Clear();
+
+  // Invalidate shader cache when the host config changes.
+  CheckForHostConfigChanges();
 
   // For testing zbuffer targets.
   // Renderer::SetZBufferRender();
@@ -1462,241 +1491,38 @@ void Renderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight,
   ClearEFBCache();
 }
 
-void Renderer::DrawFrame(GLuint framebuffer, const TargetRectangle& target_rc,
-                         const EFBRectangle& source_rc, u32 xfb_addr,
-                         const XFBSourceBase* const* xfb_sources, u32 xfb_count, u32 fb_width,
-                         u32 fb_stride, u32 fb_height)
+void Renderer::CheckForSurfaceChange()
 {
-  if (g_ActiveConfig.bUseXFB)
-  {
-    if (g_ActiveConfig.bUseRealXFB)
-      DrawRealXFB(framebuffer, target_rc, xfb_sources, xfb_count, fb_width, fb_stride, fb_height);
-    else
-      DrawVirtualXFB(framebuffer, target_rc, xfb_addr, xfb_sources, xfb_count, fb_width, fb_stride,
-                     fb_height);
-  }
-  else
-  {
-    DrawEFB(framebuffer, target_rc, source_rc);
-  }
+  if (!m_surface_changed.TestAndClear())
+    return;
+
+  m_surface_handle = m_new_surface_handle;
+  m_new_surface_handle = nullptr;
+  GLInterface->UpdateHandle(m_surface_handle);
+  GLInterface->UpdateSurface();
+
+  // With a surface change, the window likely has new dimensions.
+  m_backbuffer_width = GLInterface->GetBackBufferWidth();
+  m_backbuffer_height = GLInterface->GetBackBufferHeight();
+}
+
+void Renderer::CheckForSurfaceResize()
+{
+  if (!m_surface_resized.TestAndClear())
+    return;
+
+  GLInterface->Update();
+  m_backbuffer_width = m_new_backbuffer_width;
+  m_backbuffer_height = m_new_backbuffer_height;
 }
 
 void Renderer::DrawEFB(GLuint framebuffer, const TargetRectangle& target_rc,
-                       const EFBRectangle& source_rc)
+                       const TargetRectangle& source_rc)
 {
-  TargetRectangle scaled_source_rc = ConvertEFBRectangle(source_rc);
-
   // for msaa mode, we must resolve the efb content to non-msaa
   GLuint tex = FramebufferManager::ResolveAndGetRenderTarget(source_rc);
   glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-  BlitScreen(scaled_source_rc, target_rc, tex, s_target_width, s_target_height);
-}
-
-void Renderer::DrawVirtualXFB(GLuint framebuffer, const TargetRectangle& target_rc, u32 xfb_addr,
-                              const XFBSourceBase* const* xfb_sources, u32 xfb_count, u32 fb_width,
-                              u32 fb_stride, u32 fb_height)
-{
-  glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-
-  for (u32 i = 0; i < xfb_count; ++i)
-  {
-    const XFBSource* xfbSource = static_cast<const XFBSource*>(xfb_sources[i]);
-
-    TargetRectangle draw_rc;
-    TargetRectangle source_rc;
-    source_rc.left = xfbSource->sourceRc.left;
-    source_rc.right = xfbSource->sourceRc.right;
-    source_rc.top = xfbSource->sourceRc.top;
-    source_rc.bottom = xfbSource->sourceRc.bottom;
-
-    // use virtual xfb with offset
-    int xfbHeight = xfbSource->srcHeight;
-    int xfbWidth = xfbSource->srcWidth;
-    int hOffset = (static_cast<s32>(xfbSource->srcAddr) - static_cast<s32>(xfb_addr)) /
-                  (static_cast<s32>(fb_stride) * 2);
-
-    draw_rc.top = target_rc.top - hOffset * target_rc.GetHeight() / static_cast<s32>(fb_height);
-    draw_rc.bottom =
-        target_rc.top - (hOffset + xfbHeight) * target_rc.GetHeight() / static_cast<s32>(fb_height);
-    draw_rc.left =
-        target_rc.left +
-        (target_rc.GetWidth() - xfbWidth * target_rc.GetWidth() / static_cast<s32>(fb_stride)) / 2;
-    draw_rc.right =
-        target_rc.left +
-        (target_rc.GetWidth() + xfbWidth * target_rc.GetWidth() / static_cast<s32>(fb_stride)) / 2;
-
-    // The following code disables auto stretch.  Kept for reference.
-    // scale draw area for a 1 to 1 pixel mapping with the draw target
-    // float h_scale = static_cast<float>(fb_width) / static_cast<float>(target_rc.GetWidth());
-    // float v_scale = static_cast<float>(fb_height) / static_cast<float>(target_rc.GetHeight());
-    // draw_rc.top *= v_scale;
-    // draw_rc.bottom *= v_scale;
-    // draw_rc.left *= h_scale;
-    // draw_rc.right *= h_scale;
-
-    source_rc.right -= Renderer::EFBToScaledX(fb_stride - fb_width);
-
-    BlitScreen(source_rc, draw_rc, xfbSource->texture, xfbSource->texWidth, xfbSource->texHeight);
-  }
-}
-
-void Renderer::DrawRealXFB(GLuint framebuffer, const TargetRectangle& target_rc,
-                           const XFBSourceBase* const* xfb_sources, u32 xfb_count, u32 fb_width,
-                           u32 fb_stride, u32 fb_height)
-{
-  glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-
-  for (u32 i = 0; i < xfb_count; ++i)
-  {
-    const XFBSource* xfbSource = static_cast<const XFBSource*>(xfb_sources[i]);
-
-    TargetRectangle source_rc;
-    source_rc.left = xfbSource->sourceRc.left;
-    source_rc.right = xfbSource->sourceRc.right;
-    source_rc.top = xfbSource->sourceRc.top;
-    source_rc.bottom = xfbSource->sourceRc.bottom;
-
-    source_rc.right -= fb_stride - fb_width;
-
-    // RealXFB doesn't call ConvertEFBRectangle for sourceRc, therefore it is still assuming a top-
-    // left origin. The top offset is always zero (see FramebufferManagerBase::GetRealXFBSource).
-    source_rc.top = source_rc.bottom;
-    source_rc.bottom = 0;
-
-    TargetRectangle draw_rc = target_rc;
-    BlitScreen(source_rc, draw_rc, xfbSource->texture, xfbSource->texWidth, xfbSource->texHeight);
-  }
-}
-
-void Renderer::FlushFrameDump()
-{
-  if (!m_last_frame_exported)
-    return;
-
-  FinishFrameData();
-  glBindBuffer(GL_PIXEL_PACK_BUFFER, m_frame_dumping_pbo[0]);
-  m_frame_pbo_is_mapped[0] = true;
-  void* data = glMapBufferRange(
-      GL_PIXEL_PACK_BUFFER, 0, m_last_frame_width[0] * m_last_frame_height[0] * 4, GL_MAP_READ_BIT);
-  DumpFrameData(reinterpret_cast<u8*>(data), m_last_frame_width[0], m_last_frame_height[0],
-                m_last_frame_width[0] * 4, m_last_frame_state, true);
-  glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-  m_last_frame_exported = false;
-}
-
-void Renderer::DumpFrame(const TargetRectangle& flipped_trc, u64 ticks)
-{
-  if (!m_frame_dumping_pbo[0])
-  {
-    glGenBuffers(2, m_frame_dumping_pbo.data());
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, m_frame_dumping_pbo[0]);
-  }
-  else
-  {
-    FlushFrameDump();
-    std::swap(m_frame_dumping_pbo[0], m_frame_dumping_pbo[1]);
-    std::swap(m_frame_pbo_is_mapped[0], m_frame_pbo_is_mapped[1]);
-    std::swap(m_last_frame_width[0], m_last_frame_width[1]);
-    std::swap(m_last_frame_height[0], m_last_frame_height[1]);
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, m_frame_dumping_pbo[0]);
-    if (m_frame_pbo_is_mapped[0])
-      glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
-    m_frame_pbo_is_mapped[0] = false;
-  }
-
-  if (flipped_trc.GetWidth() != m_last_frame_width[0] ||
-      flipped_trc.GetHeight() != m_last_frame_height[0])
-  {
-    m_last_frame_width[0] = flipped_trc.GetWidth();
-    m_last_frame_height[0] = flipped_trc.GetHeight();
-    glBufferData(GL_PIXEL_PACK_BUFFER, m_last_frame_width[0] * m_last_frame_height[0] * 4, nullptr,
-                 GL_STREAM_READ);
-  }
-
-  m_last_frame_state = AVIDump::FetchState(ticks);
-  m_last_frame_exported = true;
-
-  glPixelStorei(GL_PACK_ALIGNMENT, 1);
-  glReadPixels(flipped_trc.left, flipped_trc.bottom, m_last_frame_width[0], m_last_frame_height[0],
-               GL_RGBA, GL_UNSIGNED_BYTE, 0);
-  glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-}
-
-void Renderer::DumpFrameUsingFBO(const EFBRectangle& source_rc, u32 xfb_addr,
-                                 const XFBSourceBase* const* xfb_sources, u32 xfb_count,
-                                 u32 fb_width, u32 fb_stride, u32 fb_height, u64 ticks)
-{
-  // This needs to be converted to the GL bottom-up window coordinate system.
-  TargetRectangle render_rc = CalculateFrameDumpDrawRectangle();
-  std::swap(render_rc.top, render_rc.bottom);
-
-  // Ensure the render texture meets the size requirements of the draw area.
-  u32 render_width = static_cast<u32>(render_rc.GetWidth());
-  u32 render_height = static_cast<u32>(render_rc.GetHeight());
-  PrepareFrameDumpRenderTexture(render_width, render_height);
-
-  // Ensure the alpha channel of the render texture is blank. The frame dump backend expects
-  // that the alpha is set to 1.0 for all pixels.
-  glBindFramebuffer(GL_FRAMEBUFFER, m_frame_dump_render_framebuffer);
-  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-  glClear(GL_COLOR_BUFFER_BIT);
-
-  // Render the frame into the frame dump render texture. Disable alpha writes in case the
-  // post-processing shader writes a non-1.0 value.
-  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE);
-  DrawFrame(m_frame_dump_render_framebuffer, render_rc, source_rc, xfb_addr, xfb_sources, xfb_count,
-            fb_width, fb_stride, fb_height);
-
-  // Copy frame to output buffer. This assumes that GL_FRAMEBUFFER has been set.
-  DumpFrame(render_rc, ticks);
-
-  // Restore state after drawing. This isn't the game state, it's the state set by ResetAPIState.
-  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-  glBindFramebuffer(GL_FRAMEBUFFER, 0);
-}
-
-void Renderer::PrepareFrameDumpRenderTexture(u32 width, u32 height)
-{
-  // Ensure framebuffer exists (we lazily allocate it in case frame dumping isn't used).
-  // Or, resize texture if it isn't large enough to accommodate the current frame.
-  if (m_frame_dump_render_texture != 0 && m_frame_dump_render_framebuffer != 0 &&
-      m_frame_dump_render_texture_width >= width && m_frame_dump_render_texture_height >= height)
-  {
-    return;
-  }
-
-  // Recreate texture objects.
-  if (m_frame_dump_render_texture != 0)
-    glDeleteTextures(1, &m_frame_dump_render_texture);
-  if (m_frame_dump_render_framebuffer != 0)
-    glDeleteFramebuffers(1, &m_frame_dump_render_framebuffer);
-
-  glGenTextures(1, &m_frame_dump_render_texture);
-  glActiveTexture(GL_TEXTURE9);
-  glBindTexture(GL_TEXTURE_2D, m_frame_dump_render_texture);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-
-  glGenFramebuffers(1, &m_frame_dump_render_framebuffer);
-  FramebufferManager::SetFramebuffer(m_frame_dump_render_framebuffer);
-  FramebufferManager::FramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                                         m_frame_dump_render_texture, 0);
-
-  m_frame_dump_render_texture_width = width;
-  m_frame_dump_render_texture_height = height;
-  TextureCache::SetStage();
-}
-
-void Renderer::DestroyFrameDumpResources()
-{
-  if (m_frame_dump_render_framebuffer)
-    glDeleteFramebuffers(1, &m_frame_dump_render_framebuffer);
-  if (m_frame_dump_render_texture)
-    glDeleteTextures(1, &m_frame_dump_render_texture);
-  if (m_frame_dumping_pbo[0])
-    glDeleteBuffers(2, m_frame_dumping_pbo.data());
+  BlitScreen(source_rc, target_rc, tex, m_target_width, m_target_height);
 }
 
 // ALWAYS call RestoreAPIState for each ResetAPIState call you're doing
@@ -1721,6 +1547,11 @@ void Renderer::ResetAPIState()
 
 void Renderer::RestoreAPIState()
 {
+  m_current_framebuffer = nullptr;
+  m_current_framebuffer_width = m_target_width;
+  m_current_framebuffer_height = m_target_height;
+  FramebufferManager::SetFramebuffer(0);
+
   // Gets us back into a more game-like state.
   glEnable(GL_SCISSOR_TEST);
   if (g_ActiveConfig.backend_info.bSupportsDepthClamp)
@@ -1728,45 +1559,47 @@ void Renderer::RestoreAPIState()
     glEnable(GL_CLIP_DISTANCE0);
     glEnable(GL_CLIP_DISTANCE1);
   }
-  SetGenerationMode();
   BPFunctions::SetScissor();
-  SetDepthMode();
-  SetBlendMode(true);
-  SetViewport();
+  BPFunctions::SetViewport();
 
-  const VertexManager* const vm = static_cast<VertexManager*>(g_vertex_manager.get());
-  glBindBuffer(GL_ARRAY_BUFFER, vm->m_vertex_buffers);
-  if (vm->m_last_vao)
-    glBindVertexArray(vm->m_last_vao);
-
-  TextureCache::SetStage();
+  ApplyRasterizationState(m_current_rasterization_state, true);
+  ApplyDepthState(m_current_depth_state, true);
+  ApplyBlendingState(m_current_blend_state, true);
 }
 
-void Renderer::SetGenerationMode()
+void Renderer::ApplyRasterizationState(const RasterizationState state, bool force)
 {
+  if (!force && m_current_rasterization_state == state)
+    return;
+
   // none, ccw, cw, ccw
-  if (bpmem.genMode.cullmode > 0)
+  if (state.cullmode != GenMode::CULL_NONE)
   {
     // TODO: GX_CULL_ALL not supported, yet!
     glEnable(GL_CULL_FACE);
-    glFrontFace(bpmem.genMode.cullmode == 2 ? GL_CCW : GL_CW);
+    glFrontFace(state.cullmode == GenMode::CULL_FRONT ? GL_CCW : GL_CW);
   }
   else
   {
     glDisable(GL_CULL_FACE);
   }
+
+  m_current_rasterization_state = state;
 }
 
-void Renderer::SetDepthMode()
+void Renderer::ApplyDepthState(const DepthState state, bool force)
 {
+  if (!force && m_current_depth_state == state)
+    return;
+
   const GLenum glCmpFuncs[8] = {GL_NEVER,   GL_LESS,     GL_EQUAL,  GL_LEQUAL,
                                 GL_GREATER, GL_NOTEQUAL, GL_GEQUAL, GL_ALWAYS};
 
-  if (bpmem.zmode.testenable)
+  if (state.testenable)
   {
     glEnable(GL_DEPTH_TEST);
-    glDepthMask(bpmem.zmode.updateenable ? GL_TRUE : GL_FALSE);
-    glDepthFunc(glCmpFuncs[bpmem.zmode.func]);
+    glDepthMask(state.updateenable ? GL_TRUE : GL_FALSE);
+    glDepthFunc(glCmpFuncs[state.func]);
   }
   else
   {
@@ -1776,44 +1609,108 @@ void Renderer::SetDepthMode()
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
   }
+
+  m_current_depth_state = state;
 }
 
-void Renderer::SetSamplerState(int stage, int texindex, bool custom_tex)
+void Renderer::SetPipeline(const AbstractPipeline* pipeline)
 {
-  auto const& tex = bpmem.tex[texindex];
-  auto const& tm0 = tex.texMode0[stage];
-  auto const& tm1 = tex.texMode1[stage];
+  // Not all shader changes currently go through SetPipeline, so we can't
+  // test if the pipeline hasn't changed and skip these applications. Yet.
+  m_graphics_pipeline = static_cast<const OGLPipeline*>(pipeline);
+  if (!m_graphics_pipeline)
+    return;
 
-  g_sampler_cache->SetSamplerState((texindex * 4) + stage, tm0, tm1, custom_tex);
+  ApplyRasterizationState(m_graphics_pipeline->GetRasterizationState());
+  ApplyDepthState(m_graphics_pipeline->GetDepthState());
+  ApplyBlendingState(m_graphics_pipeline->GetBlendingState());
+  ProgramShaderCache::BindVertexFormat(m_graphics_pipeline->GetVertexFormat());
+  m_graphics_pipeline->GetProgram()->shader.Bind();
+}
+
+void Renderer::SetTexture(u32 index, const AbstractTexture* texture)
+{
+  if (m_bound_textures[index] == texture)
+    return;
+
+  glActiveTexture(GL_TEXTURE0 + index);
+  glBindTexture(GL_TEXTURE_2D_ARRAY,
+                texture ? static_cast<const OGLTexture*>(texture)->GetRawTexIdentifier() : 0);
+  m_bound_textures[index] = texture;
+}
+
+void Renderer::SetSamplerState(u32 index, const SamplerState& state)
+{
+  g_sampler_cache->SetSamplerState(index, state);
+}
+
+void Renderer::UnbindTexture(const AbstractTexture* texture)
+{
+  for (size_t i = 0; i < m_bound_textures.size(); i++)
+  {
+    if (m_bound_textures[i] != texture)
+      continue;
+
+    glActiveTexture(static_cast<GLenum>(GL_TEXTURE0 + i));
+    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+  }
 }
 
 void Renderer::SetInterlacingMode()
 {
   // TODO
 }
+
+void Renderer::DrawUtilityPipeline(const void* uniforms, u32 uniforms_size, const void* vertices,
+                                   u32 vertex_stride, u32 num_vertices)
+{
+  // Copy in uniforms.
+  if (uniforms_size > 0)
+    UploadUtilityUniforms(uniforms, uniforms_size);
+
+  // Draw from base index if there is vertex data.
+  if (vertices)
+  {
+    StreamBuffer* vbuf = static_cast<VertexManager*>(g_vertex_manager.get())->GetVertexBuffer();
+    auto buf = vbuf->Map(vertex_stride * num_vertices, vertex_stride);
+    std::memcpy(buf.first, vertices, vertex_stride * num_vertices);
+    vbuf->Unmap(vertex_stride * num_vertices);
+    glDrawArrays(m_graphics_pipeline->GetGLPrimitive(), buf.second / vertex_stride, num_vertices);
+  }
+  else
+  {
+    glDrawArrays(m_graphics_pipeline->GetGLPrimitive(), 0, num_vertices);
+  }
 }
 
-namespace OGL
+void Renderer::UploadUtilityUniforms(const void* uniforms, u32 uniforms_size)
 {
-u32 Renderer::GetMaxTextureSize()
-{
-  // Right now nvidia seems to do something very weird if we try to cache GL_MAX_TEXTURE_SIZE in
-  // init. This is a workaround that lets
-  // us keep the perf improvement that caching it gives us.
-  if (s_max_texture_size == 0)
-    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &s_max_texture_size);
-  return static_cast<u32>(s_max_texture_size);
+  DEBUG_ASSERT(uniforms_size > 0);
+
+  auto buf = ProgramShaderCache::GetUniformBuffer()->Map(
+      uniforms_size, ProgramShaderCache::GetUniformBufferAlignment());
+  std::memcpy(buf.first, uniforms, uniforms_size);
+  ProgramShaderCache::GetUniformBuffer()->Unmap(uniforms_size);
+  glBindBufferRange(GL_UNIFORM_BUFFER, 1, ProgramShaderCache::GetUniformBuffer()->m_buffer,
+                    buf.second, uniforms_size);
+
+  // This is rather horrible, but because of how the UBOs are bound, this forces it to rebind.
+  ProgramShaderCache::InvalidateConstants();
 }
 
-void Renderer::ChangeSurface(void* new_surface_handle)
+void Renderer::DispatchComputeShader(const AbstractShader* shader, const void* uniforms,
+                                     u32 uniforms_size, u32 groups_x, u32 groups_y, u32 groups_z)
 {
-// Win32 polls the window size when redrawing, X11 runs an event loop in another thread.
-// This is only necessary for Android at this point, although handling resizes here
-// would be more efficient than polling.
-#ifdef ANDROID
-  s_new_surface_handle = new_surface_handle;
-  s_surface_needs_change.Set();
-  s_surface_changed.Wait();
-#endif
+  glUseProgram(static_cast<const OGLShader*>(shader)->GetGLComputeProgramID());
+  if (uniforms_size > 0)
+    UploadUtilityUniforms(uniforms, uniforms_size);
+
+  glDispatchCompute(groups_x, groups_y, groups_z);
+  ProgramShaderCache::InvalidateLastProgram();
+}
+
+std::unique_ptr<VideoCommon::AsyncShaderCompiler> Renderer::CreateAsyncShaderCompiler()
+{
+  return std::make_unique<SharedContextAsyncShaderCompiler>();
 }
 }

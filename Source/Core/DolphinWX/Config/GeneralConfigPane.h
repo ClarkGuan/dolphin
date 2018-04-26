@@ -19,19 +19,12 @@ public:
   GeneralConfigPane(wxWindow* parent, wxWindowID id);
 
 private:
-  struct CPUCore
-  {
-    int CPUid;
-    wxString name;
-  };
-  std::vector<CPUCore> m_cpu_cores;
   void InitializeGUI();
   void LoadGUIValues();
   void BindEvents();
 
   void OnDualCoreCheckBoxChanged(wxCommandEvent&);
   void OnCheatCheckBoxChanged(wxCommandEvent&);
-  void OnForceNTSCJCheckBoxChanged(wxCommandEvent&);
   void OnThrottlerChoiceChanged(wxCommandEvent&);
   void OnCPUEngineRadioBoxChanged(wxCommandEvent&);
   void OnAnalyticsCheckBoxChanged(wxCommandEvent&);
@@ -42,7 +35,6 @@ private:
 
   wxCheckBox* m_dual_core_checkbox;
   wxCheckBox* m_cheats_checkbox;
-  wxCheckBox* m_force_ntscj_checkbox;
 
   wxCheckBox* m_analytics_checkbox;
   wxButton* m_analytics_new_id;

@@ -9,12 +9,23 @@
 #include <wx/frame.h>
 
 #include "Common/CommonTypes.h"
-#include "Common/FifoQueue.h"
+#include "Common/SPSCQueue.h"
 #include "Core/NetPlayClient.h"
 #include "Core/NetPlayProto.h"
 #include "Core/NetPlayServer.h"
 
-class CGameListCtrl;
+#ifdef _WIN32
+// HACK: wxWidgets headers don't play well with some of the macros defined in Windows
+// headers and perform their own magic to fix things, as long as they're included entirely
+// either before or after any Windows headers.
+//
+// This file can cause a conflict in other DolphinWX files because NetPlay headers directly
+// include ENet headers, which leak Windows header macros. To fix this, explicitly tell
+// wxWidgets here that it needs to re-clean macros.
+#include <wx/msw/winundef.h>
+#endif
+
+class GameListCtrl;
 class MD5Dialog;
 class wxButton;
 class wxCheckBox;
@@ -67,7 +78,7 @@ enum class MD5Target
 class NetPlayDialog : public wxFrame, public NetPlayUI
 {
 public:
-  NetPlayDialog(wxWindow* parent, const CGameListCtrl* const game_list, const std::string& game,
+  NetPlayDialog(wxWindow* parent, const GameListCtrl* const game_list, const std::string& game,
                 const bool is_hosting = false);
   ~NetPlayDialog();
 
@@ -91,12 +102,12 @@ public:
   void OnPadBufferChanged(u32 buffer) override;
   void OnDesync(u32 frame, const std::string& player) override;
   void OnConnectionLost() override;
-  void OnTraversalError(int error) override;
+  void OnTraversalError(TraversalClient::FailureReason error) override;
 
   static NetPlayDialog*& GetInstance() { return npd; }
   static NetPlayClient*& GetNetPlayClient() { return netplay_client; }
   static NetPlayServer*& GetNetPlayServer() { return netplay_server; }
-  static void FillWithGameNames(wxListBox* game_lbox, const CGameListCtrl& game_list);
+  static void FillWithGameNames(wxListBox* game_lbox, const GameListCtrl& game_list);
 
   bool IsRecording() override;
 
@@ -150,9 +161,9 @@ private:
   std::string m_desync_player;
 
   std::vector<int> m_playerids;
-  Common::FifoQueue<std::string> m_chat_msgs;
+  Common::SPSCQueue<std::string> m_chat_msgs;
 
-  const CGameListCtrl* const m_game_list;
+  const GameListCtrl* const m_game_list;
 
   static NetPlayDialog* npd;
   static NetPlayServer* netplay_server;

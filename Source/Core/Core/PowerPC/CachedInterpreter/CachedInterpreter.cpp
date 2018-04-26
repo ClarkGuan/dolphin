@@ -3,6 +3,7 @@
 // Refer to the license.txt file included.
 
 #include "Core/PowerPC/CachedInterpreter/CachedInterpreter.h"
+
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
 #include "Core/ConfigManager.h"
@@ -13,6 +14,45 @@
 #include "Core/PowerPC/Jit64Common/Jit64Base.h"
 #include "Core/PowerPC/PPCAnalyst.h"
 #include "Core/PowerPC/PowerPC.h"
+
+struct CachedInterpreter::Instruction
+{
+  using CommonCallback = void (*)(UGeckoInstruction);
+  using ConditionalCallback = bool (*)(u32);
+
+  Instruction() {}
+  Instruction(const CommonCallback c, UGeckoInstruction i)
+      : common_callback(c), data(i.hex), type(Type::Common)
+  {
+  }
+
+  Instruction(const ConditionalCallback c, u32 d)
+      : conditional_callback(c), data(d), type(Type::Conditional)
+  {
+  }
+
+  enum class Type
+  {
+    Abort,
+    Common,
+    Conditional,
+  };
+
+  union
+  {
+    const CommonCallback common_callback;
+    const ConditionalCallback conditional_callback;
+  };
+
+  u32 data = 0;
+  Type type = Type::Abort;
+};
+
+CachedInterpreter::CachedInterpreter() : code_buffer(32000)
+{
+}
+
+CachedInterpreter::~CachedInterpreter() = default;
 
 void CachedInterpreter::Init()
 {
@@ -33,6 +73,11 @@ void CachedInterpreter::Shutdown()
   m_block_cache.Shutdown();
 }
 
+const u8* CachedInterpreter::GetCodePtr() const
+{
+  return reinterpret_cast<const u8*>(m_code.data() + m_code.size());
+}
+
 void CachedInterpreter::ExecuteOneBlock()
 {
   const u8* normal_entry = m_block_cache.Dispatch();
@@ -44,21 +89,21 @@ void CachedInterpreter::ExecuteOneBlock()
 
   const Instruction* code = reinterpret_cast<const Instruction*>(normal_entry);
 
-  for (; code->type != Instruction::INSTRUCTION_ABORT; ++code)
+  for (; code->type != Instruction::Type::Abort; ++code)
   {
     switch (code->type)
     {
-    case Instruction::INSTRUCTION_TYPE_COMMON:
+    case Instruction::Type::Common:
       code->common_callback(UGeckoInstruction(code->data));
       break;
 
-    case Instruction::INSTRUCTION_TYPE_CONDITIONAL:
+    case Instruction::Type::Conditional:
       if (code->conditional_callback(code->data))
         return;
       break;
 
     default:
-      ERROR_LOG(POWERPC, "Unknown CachedInterpreter Instruction: %d", code->type);
+      ERROR_LOG(POWERPC, "Unknown CachedInterpreter Instruction: %d", static_cast<int>(code->type));
       break;
     }
   }
@@ -66,7 +111,7 @@ void CachedInterpreter::ExecuteOneBlock()
 
 void CachedInterpreter::Run()
 {
-  while (CPU::GetState() == CPU::CPU_RUNNING)
+  while (CPU::GetState() == CPU::State::Running)
   {
     // Start new timing slice
     // NOTE: Exceptions may change PC
@@ -105,7 +150,7 @@ static void WriteBrokenBlockNPC(UGeckoInstruction data)
 
 static bool CheckFPU(u32 data)
 {
-  UReg_MSR& msr = (UReg_MSR&)MSR;
+  UReg_MSR msr{MSR};
   if (!msr.FP)
   {
     PowerPC::ppcState.Exceptions |= EXCEPTION_FPU_UNAVAILABLE;
@@ -158,24 +203,23 @@ void CachedInterpreter::Jit(u32 address)
 
   b->checkedEntry = GetCodePtr();
   b->normalEntry = GetCodePtr();
-  b->runCount = 0;
 
   for (u32 i = 0; i < code_block.m_num_instructions; i++)
   {
     js.downcountAmount += ops[i].opinfo->numCycles;
 
-    u32 function = HLE::GetFunctionIndex(ops[i].address);
+    u32 function = HLE::GetFirstFunctionIndex(ops[i].address);
     if (function != 0)
     {
-      int type = HLE::GetFunctionTypeByIndex(function);
-      if (type == HLE::HLE_HOOK_START || type == HLE::HLE_HOOK_REPLACE)
+      HLE::HookType type = HLE::GetFunctionTypeByIndex(function);
+      if (type == HLE::HookType::Start || type == HLE::HookType::Replace)
       {
-        int flags = HLE::GetFunctionFlagsByIndex(function);
+        HLE::HookFlag flags = HLE::GetFunctionFlagsByIndex(function);
         if (HLE::IsEnabled(flags))
         {
           m_code.emplace_back(WritePC, ops[i].address);
-          m_code.emplace_back(Interpreter::HLEFunction, ops[i].inst);
-          if (type == HLE::HLE_HOOK_REPLACE)
+          m_code.emplace_back(Interpreter::HLEFunction, function);
+          if (type == HLE::HookType::Replace)
           {
             m_code.emplace_back(EndBlock, js.downcountAmount);
             m_code.emplace_back();
@@ -200,7 +244,7 @@ void CachedInterpreter::Jit(u32 address)
 
       if (endblock || memcheck)
         m_code.emplace_back(WritePC, ops[i].address);
-      m_code.emplace_back(GetInterpreterOp(ops[i].inst), ops[i].inst);
+      m_code.emplace_back(PPCTables::GetInterpreterOp(ops[i].inst), ops[i].inst);
       if (memcheck)
         m_code.emplace_back(CheckDSI, js.downcountAmount);
       if (endblock)

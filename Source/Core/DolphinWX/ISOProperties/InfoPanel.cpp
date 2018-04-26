@@ -5,7 +5,9 @@
 #include "DolphinWX/ISOProperties/InfoPanel.h"
 
 #include <algorithm>
+#include <cinttypes>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -30,12 +32,18 @@
 #include "Core/IOS/ES/Formats.h"
 #include "DiscIO/Enums.h"
 #include "DiscIO/Volume.h"
-#include "DolphinWX/ISOFile.h"
 #include "DolphinWX/ISOProperties/ISOProperties.h"
 #include "DolphinWX/WxUtils.h"
+#include "UICommon/GameFile.h"
 
 namespace
 {
+template <typename T>
+wxString OptionalToString(std::optional<T> value)
+{
+  return value ? StrToWxStr(std::to_string(*value)) : wxString();
+}
+
 wxArrayString GetLanguageChoiceStrings(const std::vector<DiscIO::Language>& languages)
 {
   wxArrayString available_languages;
@@ -44,37 +52,37 @@ wxArrayString GetLanguageChoiceStrings(const std::vector<DiscIO::Language>& lang
   {
     switch (language)
     {
-    case DiscIO::Language::LANGUAGE_JAPANESE:
+    case DiscIO::Language::Japanese:
       available_languages.Add(_("Japanese"));
       break;
-    case DiscIO::Language::LANGUAGE_ENGLISH:
+    case DiscIO::Language::English:
       available_languages.Add(_("English"));
       break;
-    case DiscIO::Language::LANGUAGE_GERMAN:
+    case DiscIO::Language::German:
       available_languages.Add(_("German"));
       break;
-    case DiscIO::Language::LANGUAGE_FRENCH:
+    case DiscIO::Language::French:
       available_languages.Add(_("French"));
       break;
-    case DiscIO::Language::LANGUAGE_SPANISH:
+    case DiscIO::Language::Spanish:
       available_languages.Add(_("Spanish"));
       break;
-    case DiscIO::Language::LANGUAGE_ITALIAN:
+    case DiscIO::Language::Italian:
       available_languages.Add(_("Italian"));
       break;
-    case DiscIO::Language::LANGUAGE_DUTCH:
+    case DiscIO::Language::Dutch:
       available_languages.Add(_("Dutch"));
       break;
-    case DiscIO::Language::LANGUAGE_SIMPLIFIED_CHINESE:
+    case DiscIO::Language::SimplifiedChinese:
       available_languages.Add(_("Simplified Chinese"));
       break;
-    case DiscIO::Language::LANGUAGE_TRADITIONAL_CHINESE:
+    case DiscIO::Language::TraditionalChinese:
       available_languages.Add(_("Traditional Chinese"));
       break;
-    case DiscIO::Language::LANGUAGE_KOREAN:
+    case DiscIO::Language::Korean:
       available_languages.Add(_("Korean"));
       break;
-    case DiscIO::Language::LANGUAGE_UNKNOWN:
+    case DiscIO::Language::Unknown:
     default:
       available_languages.Add(_("Unknown"));
       break;
@@ -88,33 +96,33 @@ wxString GetCountryName(DiscIO::Country country)
 {
   switch (country)
   {
-  case DiscIO::Country::COUNTRY_AUSTRALIA:
+  case DiscIO::Country::Australia:
     return _("Australia");
-  case DiscIO::Country::COUNTRY_EUROPE:
+  case DiscIO::Country::Europe:
     return _("Europe");
-  case DiscIO::Country::COUNTRY_FRANCE:
+  case DiscIO::Country::France:
     return _("France");
-  case DiscIO::Country::COUNTRY_ITALY:
+  case DiscIO::Country::Italy:
     return _("Italy");
-  case DiscIO::Country::COUNTRY_GERMANY:
+  case DiscIO::Country::Germany:
     return _("Germany");
-  case DiscIO::Country::COUNTRY_NETHERLANDS:
+  case DiscIO::Country::Netherlands:
     return _("Netherlands");
-  case DiscIO::Country::COUNTRY_RUSSIA:
+  case DiscIO::Country::Russia:
     return _("Russia");
-  case DiscIO::Country::COUNTRY_SPAIN:
+  case DiscIO::Country::Spain:
     return _("Spain");
-  case DiscIO::Country::COUNTRY_USA:
+  case DiscIO::Country::USA:
     return _("USA");
-  case DiscIO::Country::COUNTRY_JAPAN:
+  case DiscIO::Country::Japan:
     return _("Japan");
-  case DiscIO::Country::COUNTRY_KOREA:
+  case DiscIO::Country::Korea:
     return _("Korea");
-  case DiscIO::Country::COUNTRY_TAIWAN:
+  case DiscIO::Country::Taiwan:
     return _("Taiwan");
-  case DiscIO::Country::COUNTRY_WORLD:
+  case DiscIO::Country::World:
     return _("World");
-  case DiscIO::Country::COUNTRY_UNKNOWN:
+  case DiscIO::Country::Unknown:
   default:
     return _("Unknown");
   }
@@ -134,8 +142,8 @@ int FindPreferredLanguageIndex(DiscIO::Language preferred_language,
 }
 }  // Anonymous namespace
 
-InfoPanel::InfoPanel(wxWindow* parent, wxWindowID id, const GameListItem& item,
-                     const std::unique_ptr<DiscIO::IVolume>& opened_iso)
+InfoPanel::InfoPanel(wxWindow* parent, wxWindowID id, const UICommon::GameFile& item,
+                     const std::unique_ptr<DiscIO::Volume>& opened_iso)
     : wxPanel{parent, id}, m_game_list_item{item}, m_opened_iso{opened_iso}
 {
   CreateGUI();
@@ -177,14 +185,17 @@ void InfoPanel::LoadISODetails()
   m_game_id->SetValue(StrToWxStr(m_opened_iso->GetGameID()));
   m_country->SetValue(GetCountryName(m_opened_iso->GetCountry()));
   m_maker_id->SetValue("0x" + StrToWxStr(m_opened_iso->GetMakerID()));
-  m_revision->SetValue(StrToWxStr(std::to_string(m_opened_iso->GetRevision())));
+  m_revision->SetValue(OptionalToString(m_opened_iso->GetRevision()));
   m_date->SetValue(StrToWxStr(m_opened_iso->GetApploaderDate()));
-  m_fst->SetValue(StrToWxStr(std::to_string(m_opened_iso->GetFSTSize())));
   if (m_ios_version)
   {
-    IOS::HLE::TMDReader tmd{m_opened_iso->GetTMD()};
+    const IOS::ES::TMDReader tmd = m_opened_iso->GetTMD(m_opened_iso->GetGamePartition());
     if (tmd.IsValid())
+    {
       m_ios_version->SetValue(StringFromFormat("IOS%u", static_cast<u32>(tmd.GetIOSId())));
+      m_game_id->SetValue(StrToWxStr(StringFromFormat(
+          "%s (%016" PRIx64 ")", m_opened_iso->GetGameID().c_str(), tmd.GetTitleId())));
+    }
   }
 }
 
@@ -192,14 +203,14 @@ void InfoPanel::LoadBannerDetails()
 {
   LoadBannerImage();
 
-  const bool is_wii = m_opened_iso->GetVolumeType() != DiscIO::Platform::GAMECUBE_DISC;
+  const bool is_wii = DiscIO::IsWii(m_opened_iso->GetVolumeType());
   ChangeBannerDetails(SConfig::GetInstance().GetCurrentLanguage(is_wii));
 }
 
 void InfoPanel::LoadBannerImage()
 {
-  const auto& banner_image = m_game_list_item.GetBannerImage();
-  const auto banner_min_size = m_banner->GetMinSize();
+  const wxImage banner_image = WxUtils::ToWxImage(m_game_list_item.GetBannerImage());
+  const wxSize banner_min_size = m_banner->GetMinSize();
 
   if (banner_image.IsOk())
   {
@@ -221,9 +232,8 @@ wxStaticBoxSizer* InfoPanel::CreateISODetailsSizer()
       {_("Maker ID:"), m_maker_id},
       {_("Revision:"), m_revision},
       {_("Apploader Date:"), m_date},
-      {_("FST Size:"), m_fst},
   }};
-  if (!m_opened_iso->GetTMD().empty())
+  if (m_opened_iso->GetTMD(m_opened_iso->GetGamePartition()).IsValid())
     controls.emplace_back(_("IOS Version:"), m_ios_version);
 
   const int space_10 = FromDIP(10);
@@ -306,7 +316,7 @@ wxStaticBoxSizer* InfoPanel::CreateBannerDetailsSizer()
 wxChoice* InfoPanel::CreateCommentLanguageChoice()
 {
   const auto languages = m_game_list_item.GetLanguages();
-  const bool is_wii = m_opened_iso->GetVolumeType() != DiscIO::Platform::GAMECUBE_DISC;
+  const bool is_wii = DiscIO::IsWii(m_opened_iso->GetVolumeType());
   const auto preferred_language = SConfig::GetInstance().GetCurrentLanguage(is_wii);
   const int preferred_language_index = FindPreferredLanguageIndex(preferred_language, languages);
   const auto choices = GetLanguageChoiceStrings(languages);
@@ -327,7 +337,7 @@ void InfoPanel::OnComputeMD5(wxCommandEvent& WXUNUSED(event))
                                        wxPD_ELAPSED_TIME | wxPD_ESTIMATED_TIME |
                                        wxPD_REMAINING_TIME | wxPD_SMOOTH);
 
-  const auto result = MD5::MD5Sum(m_game_list_item.GetFileName(), [&progress_dialog](int progress) {
+  const auto result = MD5::MD5Sum(m_game_list_item.GetFilePath(), [&progress_dialog](int progress) {
     return progress_dialog.Update(progress);
   });
 
@@ -357,7 +367,7 @@ void InfoPanel::OnSaveBannerImage(wxCommandEvent& WXUNUSED(event))
 
   if (dialog.ShowModal() == wxID_OK)
   {
-    m_game_list_item.GetBannerImage().SaveFile(dialog.GetPath());
+    WxUtils::ToWxImage(m_game_list_item.GetBannerImage()).SaveFile(dialog.GetPath());
   }
 
   Raise();
@@ -365,16 +375,16 @@ void InfoPanel::OnSaveBannerImage(wxCommandEvent& WXUNUSED(event))
 
 void InfoPanel::ChangeBannerDetails(DiscIO::Language language)
 {
-  const auto name = StrToWxStr(m_game_list_item.GetName(language));
+  const auto name = StrToWxStr(m_game_list_item.GetLongName(language));
   const auto comment = StrToWxStr(m_game_list_item.GetDescription(language));
-  const auto maker = StrToWxStr(m_game_list_item.GetCompany());
+  const auto maker = StrToWxStr(m_game_list_item.GetLongMaker(language));
 
   m_name->SetValue(name);
   m_comment->SetValue(comment);
   m_maker->SetValue(maker);
 
   std::string path, filename, extension;
-  SplitPath(m_game_list_item.GetFileName(), &path, &filename, &extension);
+  SplitPath(m_game_list_item.GetFilePath(), &path, &filename, &extension);
 
   // Real disk drives don't have filenames on Windows
   if (filename.empty() && extension.empty())

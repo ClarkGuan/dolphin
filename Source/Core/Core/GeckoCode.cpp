@@ -2,6 +2,8 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include "Core/GeckoCode.h"
+
 #include <algorithm>
 #include <iterator>
 #include <mutex>
@@ -13,7 +15,6 @@
 #include "Common/FileUtil.h"
 
 #include "Core/ConfigManager.h"
-#include "Core/GeckoCode.h"
 #include "Core/HW/Memmap.h"
 #include "Core/PowerPC/PowerPC.h"
 
@@ -138,8 +139,9 @@ static Installation InstallCodeHandlerLocked()
     // If the code is not going to fit in the space we have left then we have to skip it
     if (next_address + active_code.codes.size() * CODE_SIZE > end_address)
     {
-      NOTICE_LOG(ACTIONREPLAY, "Too many GeckoCodes! Ran out of storage space in Game RAM. Could "
-                               "not write: \"%s\". Need %zu bytes, only %u remain.",
+      NOTICE_LOG(ACTIONREPLAY,
+                 "Too many GeckoCodes! Ran out of storage space in Game RAM. Could "
+                 "not write: \"%s\". Need %zu bytes, only %u remain.",
                  active_code.name.c_str(), active_code.codes.size() * CODE_SIZE,
                  end_address - next_address);
       continue;
@@ -237,8 +239,9 @@ void RunCodeHandler()
     PowerPC::HostWrite_U64(riPS0(i), SP + 24 + 2 * i * sizeof(u64));
     PowerPC::HostWrite_U64(riPS1(i), SP + 24 + (2 * i + 1) * sizeof(u64));
   }
-  DEBUG_LOG(ACTIONREPLAY, "GeckoCodes: Initiating phantom branch-and-link. "
-                          "PC = 0x%08X, SP = 0x%08X, SFP = 0x%08X",
+  DEBUG_LOG(ACTIONREPLAY,
+            "GeckoCodes: Initiating phantom branch-and-link. "
+            "PC = 0x%08X, SP = 0x%08X, SFP = 0x%08X",
             PC, SP, SFP);
   LR = HLE_TRAMPOLINE_ADDRESS;
   PC = NPC = ENTRY_POINT;

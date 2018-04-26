@@ -60,6 +60,7 @@ public:
   void SetIsWii(bool isWii);
   bool GetIsWii() const;
   bool HasBrokenEFBCopies() const;
+  bool ShouldGenerateFakeVIUpdates() const;
 
   u32* GetBPMem() { return m_BPMem; }
   u32* GetCPMem() { return m_CPMem; }
@@ -94,8 +95,8 @@ private:
   u32 m_XFRegs[XF_REGS_SIZE];
   u8 m_TexMem[TEX_MEM_SIZE];
 
-  u32 m_Flags;
-  u32 m_Version;
+  u32 m_Flags = 0;
+  u32 m_Version = 0;
 
   std::vector<FifoFrameInfo> m_Frames;
 };

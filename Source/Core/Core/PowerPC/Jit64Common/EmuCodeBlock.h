@@ -10,6 +10,7 @@
 #include "Common/CommonTypes.h"
 #include "Common/x64Emitter.h"
 
+#include "Core/PowerPC/Jit64Common/ConstantPool.h"
 #include "Core/PowerPC/Jit64Common/FarCodeCache.h"
 #include "Core/PowerPC/Jit64Common/TrampolineInfo.h"
 
@@ -28,6 +29,24 @@ public:
   void SwitchToFarCode();
   void SwitchToNearCode();
 
+  template <typename T>
+  const void* GetConstantFromPool(const T& value)
+  {
+    return m_const_pool.GetConstant(&value, sizeof(T), 1, 0);
+  }
+
+  template <typename T>
+  Gen::OpArg MConst(const T& value)
+  {
+    return Gen::M(GetConstantFromPool(value));
+  }
+
+  template <typename T, size_t N>
+  Gen::OpArg MConst(const T (&value)[N], size_t index = 0)
+  {
+    return Gen::M(m_const_pool.GetConstant(&value, sizeof(T), N, index));
+  }
+
   Gen::FixupBranch CheckIfSafeAddress(const Gen::OpArg& reg_value, Gen::X64Reg reg_addr,
                                       BitSet32 registers_in_use);
   void UnsafeLoadRegToReg(Gen::X64Reg reg_addr, Gen::X64Reg reg_value, int accessSize,
@@ -42,7 +61,6 @@ public:
 
   bool UnsafeLoadToReg(Gen::X64Reg reg_value, Gen::OpArg opAddress, int accessSize, s32 offset,
                        bool signExtend, Gen::MovInfo* info = nullptr);
-  void UnsafeWriteGatherPipe(int accessSize);
 
   // Generate a load/write from the MMIO handler for a given address. Only
   // call for known addresses in MMIO range (MMIO::IsMMIOAddress).
@@ -105,6 +123,7 @@ public:
   void Clear();
 
 protected:
+  ConstantPool m_const_pool;
   FarCodeCache m_far_code;
   u8* m_near_code;  // Backed up when we switch to far code.
 

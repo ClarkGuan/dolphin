@@ -67,8 +67,8 @@ void JitArm64::rfi(UGeckoInstruction inst)
   LDR(INDEX_UNSIGNED, WA, PPC_REG, PPCSTATE_OFF(spr[SPR_SRR0]));
   gpr.Unlock(WB, WC);
 
-  // WA is unlocked in this function
   WriteExceptionExit(WA);
+  gpr.Unlock(WA);
 }
 
 void JitArm64::bx(UGeckoInstruction inst)
@@ -197,8 +197,8 @@ void JitArm64::bcctrx(UGeckoInstruction inst)
   FALLBACK_IF(!(inst.BO_2 & BO_DONT_CHECK_CONDITION));
 
   // bcctrx doesn't decrement and/or test CTR
-  _assert_msg_(DYNA_REC, inst.BO_2 & BO_DONT_DECREMENT_FLAG,
-               "bcctrx with decrement and test CTR option is invalid!");
+  ASSERT_MSG(DYNA_REC, inst.BO_2 & BO_DONT_DECREMENT_FLAG,
+             "bcctrx with decrement and test CTR option is invalid!");
 
   // BO_2 == 1z1zz -> b always
 
@@ -220,6 +220,8 @@ void JitArm64::bcctrx(UGeckoInstruction inst)
   AND(WA, WA, 30, 29);  // Wipe the bottom 2 bits.
 
   WriteExit(WA, inst.LK_3, js.compilerPC + 4);
+
+  gpr.Unlock(WA);
 }
 
 void JitArm64::bclrx(UGeckoInstruction inst)
@@ -231,6 +233,8 @@ void JitArm64::bclrx(UGeckoInstruction inst)
       (inst.BO & BO_DONT_DECREMENT_FLAG) == 0 || (inst.BO & BO_DONT_CHECK_CONDITION) == 0;
 
   ARM64Reg WA = gpr.GetReg();
+  ARM64Reg WB = inst.LK ? gpr.GetReg() : INVALID_REG;
+
   FixupBranch pCTRDontBranch;
   if ((inst.BO & BO_DONT_DECREMENT_FLAG) == 0)  // Decrement and test CTR
   {
@@ -263,7 +267,6 @@ void JitArm64::bclrx(UGeckoInstruction inst)
 
   if (inst.LK)
   {
-    ARM64Reg WB = gpr.GetReg();
     MOVI2R(WB, js.compilerPC + 4);
     STR(INDEX_UNSIGNED, WB, PPC_REG, PPCSTATE_OFF(spr[SPR_LR]));
     gpr.Unlock(WB);
@@ -273,6 +276,8 @@ void JitArm64::bclrx(UGeckoInstruction inst)
   fpr.Flush(conditional ? FlushMode::FLUSH_MAINTAIN_STATE : FlushMode::FLUSH_ALL);
 
   WriteBLRExit(WA);
+
+  gpr.Unlock(WA);
 
   if (conditional)
     SwitchToNearCode();

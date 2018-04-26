@@ -2,6 +2,9 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include "VideoCommon/VertexLoaderBase.h"
+
+#include <array>
 #include <cinttypes>
 #include <cstring>
 #include <memory>
@@ -15,7 +18,6 @@
 
 #include "VideoCommon/DataReader.h"
 #include "VideoCommon/VertexLoader.h"
-#include "VideoCommon/VertexLoaderBase.h"
 
 #ifdef _M_X86_64
 #include "VideoCommon/VertexLoaderX64.h"
@@ -24,16 +26,9 @@
 #endif
 
 VertexLoaderBase::VertexLoaderBase(const TVtxDesc& vtx_desc, const VAT& vtx_attr)
+    : m_VtxDesc{vtx_desc}, m_vat{vtx_attr}
 {
-  m_numLoadedVertices = 0;
-  m_VertexSize = 0;
-  m_native_vertex_format = nullptr;
-  m_native_components = 0;
-  memset(&m_native_vtx_decl, 0, sizeof(m_native_vtx_decl));
-
   SetVAT(vtx_attr);
-  m_VtxDesc = vtx_desc;
-  m_vat = vtx_attr;
 }
 
 void VertexLoaderBase::SetVAT(const VAT& vat)
@@ -77,55 +72,73 @@ void VertexLoaderBase::SetVAT(const VAT& vat)
   m_VtxAttr.texCoord[7].Frac = vat.g2.Tex7Frac;
 };
 
-void VertexLoaderBase::AppendToString(std::string* dest) const
+std::string VertexLoaderBase::ToString() const
 {
-  dest->reserve(250);
+  std::string dest;
+  dest.reserve(250);
 
-  dest->append(GetName());
-  dest->append(": ");
+  dest += GetName();
+  dest += ": ";
 
-  static const char* posMode[4] = {
-      "Inv", "Dir", "I8", "I16",
-  };
-  static const char* posFormats[8] = {
-      "u8", "s8", "u16", "s16", "flt", "Inv", "Inv", "Inv",
-  };
-  static const char* colorFormat[8] = {
-      "565", "888", "888x", "4444", "6666", "8888", "Inv", "Inv",
-  };
+  static constexpr std::array<const char*, 4> pos_mode{{
+      "Inv",
+      "Dir",
+      "I8",
+      "I16",
+  }};
+  static constexpr std::array<const char*, 8> pos_formats{{
+      "u8",
+      "s8",
+      "u16",
+      "s16",
+      "flt",
+      "Inv",
+      "Inv",
+      "Inv",
+  }};
+  static constexpr std::array<const char*, 8> color_format{{
+      "565",
+      "888",
+      "888x",
+      "4444",
+      "6666",
+      "8888",
+      "Inv",
+      "Inv",
+  }};
 
-  dest->append(StringFromFormat("%ib skin: %i P: %i %s-%s ", m_VertexSize, (u32)m_VtxDesc.PosMatIdx,
-                                m_VtxAttr.PosElements ? 3 : 2, posMode[m_VtxDesc.Position],
-                                posFormats[m_VtxAttr.PosFormat]));
+  dest += StringFromFormat("%ib skin: %i P: %i %s-%s ", m_VertexSize, (u32)m_VtxDesc.PosMatIdx,
+                           m_VtxAttr.PosElements ? 3 : 2, pos_mode[m_VtxDesc.Position],
+                           pos_formats[m_VtxAttr.PosFormat]);
 
   if (m_VtxDesc.Normal)
   {
-    dest->append(StringFromFormat("Nrm: %i %s-%s ", m_VtxAttr.NormalElements,
-                                  posMode[m_VtxDesc.Normal], posFormats[m_VtxAttr.NormalFormat]));
+    dest += StringFromFormat("Nrm: %i %s-%s ", m_VtxAttr.NormalElements, pos_mode[m_VtxDesc.Normal],
+                             pos_formats[m_VtxAttr.NormalFormat]);
   }
 
-  u64 color_mode[2] = {m_VtxDesc.Color0, m_VtxDesc.Color1};
-  for (int i = 0; i < 2; i++)
+  const std::array<u64, 2> color_mode{{m_VtxDesc.Color0, m_VtxDesc.Color1}};
+  for (size_t i = 0; i < color_mode.size(); i++)
   {
     if (color_mode[i])
     {
-      dest->append(StringFromFormat("C%i: %i %s-%s ", i, m_VtxAttr.color[i].Elements,
-                                    posMode[color_mode[i]], colorFormat[m_VtxAttr.color[i].Comp]));
+      dest += StringFromFormat("C%zu: %i %s-%s ", i, m_VtxAttr.color[i].Elements,
+                               pos_mode[color_mode[i]], color_format[m_VtxAttr.color[i].Comp]);
     }
   }
-  u64 tex_mode[8] = {m_VtxDesc.Tex0Coord, m_VtxDesc.Tex1Coord, m_VtxDesc.Tex2Coord,
-                     m_VtxDesc.Tex3Coord, m_VtxDesc.Tex4Coord, m_VtxDesc.Tex5Coord,
-                     m_VtxDesc.Tex6Coord, m_VtxDesc.Tex7Coord};
-  for (int i = 0; i < 8; i++)
+  const std::array<u64, 8> tex_mode{{m_VtxDesc.Tex0Coord, m_VtxDesc.Tex1Coord, m_VtxDesc.Tex2Coord,
+                                     m_VtxDesc.Tex3Coord, m_VtxDesc.Tex4Coord, m_VtxDesc.Tex5Coord,
+                                     m_VtxDesc.Tex6Coord, m_VtxDesc.Tex7Coord}};
+  for (size_t i = 0; i < tex_mode.size(); i++)
   {
     if (tex_mode[i])
     {
-      dest->append(StringFromFormat("T%i: %i %s-%s ", i, m_VtxAttr.texCoord[i].Elements,
-                                    posMode[tex_mode[i]],
-                                    posFormats[m_VtxAttr.texCoord[i].Format]));
+      dest += StringFromFormat("T%zu: %i %s-%s ", i, m_VtxAttr.texCoord[i].Elements,
+                               pos_mode[tex_mode[i]], pos_formats[m_VtxAttr.texCoord[i].Format]);
     }
   }
-  dest->append(StringFromFormat(" - %i v", m_numLoadedVertices));
+  dest += StringFromFormat(" - %i v", m_numLoadedVertices);
+  return dest;
 }
 
 // a hacky implementation to compare two vertex loaders
@@ -178,8 +191,9 @@ public:
 
     if (memcmp(buffer_a.data(), buffer_b.data(),
                std::min(count_a, count_b) * m_native_vtx_decl.stride))
-      ERROR_LOG(VIDEO, "The two vertex loaders have loaded different data "
-                       "(guru meditation 0x%016" PRIx64 ", 0x%08x, 0x%08x, 0x%08x).",
+      ERROR_LOG(VIDEO,
+                "The two vertex loaders have loaded different data "
+                "(guru meditation 0x%016" PRIx64 ", 0x%08x, 0x%08x, 0x%08x).",
                 m_VtxDesc.Hex, m_vat.g0.Hex, m_vat.g1.Hex, m_vat.g2.Hex);
 
     memcpy(dst.GetPointer(), buffer_a.data(), count_a * m_native_vtx_decl.stride);
@@ -188,6 +202,7 @@ public:
   }
   std::string GetName() const override { return "CompareLoader"; }
   bool IsInitialized() override { return m_initialized; }
+
 private:
   bool m_initialized;
 
@@ -203,7 +218,7 @@ std::unique_ptr<VertexLoaderBase> VertexLoaderBase::CreateVertexLoader(const TVt
 {
   std::unique_ptr<VertexLoaderBase> loader;
 
-//#define COMPARE_VERTEXLOADERS
+  //#define COMPARE_VERTEXLOADERS
 
 #if defined(COMPARE_VERTEXLOADERS) && defined(_M_X86_64)
   // first try: Any new VertexLoader vs the old one

@@ -2,6 +2,8 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include "DolphinWX/FifoPlayerDlg.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <mutex>
@@ -27,11 +29,11 @@
 
 #include "Common/Assert.h"
 #include "Common/CommonTypes.h"
+#include "Common/Swap.h"
 #include "Core/FifoPlayer/FifoDataFile.h"
 #include "Core/FifoPlayer/FifoPlaybackAnalyzer.h"
 #include "Core/FifoPlayer/FifoPlayer.h"
 #include "Core/FifoPlayer/FifoRecorder.h"
-#include "DolphinWX/FifoPlayerDlg.h"
 #include "DolphinWX/WxUtils.h"
 #include "VideoCommon/BPMemory.h"
 #include "VideoCommon/OpcodeDecoding.h"
@@ -712,7 +714,7 @@ void FifoPlayerDlg::OnObjectListSelectionChanged(wxCommandEvent& event)
           // The recorder should have expanded display lists into the fifo stream and skipped the
           // call to start them
           // That is done to make it easier to track where memory is updated
-          _assert_(false);
+          ASSERT(false);
           objectdata += 8;
           newLabel = wxString::Format("CALL DL");
           break;

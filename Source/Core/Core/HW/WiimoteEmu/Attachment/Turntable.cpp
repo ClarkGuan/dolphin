@@ -23,34 +23,58 @@ namespace WiimoteEmu
 constexpr std::array<u8, 6> turntable_id{{0x03, 0x00, 0xa4, 0x20, 0x01, 0x03}};
 
 constexpr std::array<u16, 9> turntable_button_bitmasks{{
-    Turntable::BUTTON_L_GREEN, Turntable::BUTTON_L_RED, Turntable::BUTTON_L_BLUE,
-    Turntable::BUTTON_R_GREEN, Turntable::BUTTON_R_RED, Turntable::BUTTON_R_BLUE,
-    Turntable::BUTTON_MINUS, Turntable::BUTTON_PLUS, Turntable::BUTTON_EUPHORIA,
+    Turntable::BUTTON_L_GREEN,
+    Turntable::BUTTON_L_RED,
+    Turntable::BUTTON_L_BLUE,
+    Turntable::BUTTON_R_GREEN,
+    Turntable::BUTTON_R_RED,
+    Turntable::BUTTON_R_BLUE,
+    Turntable::BUTTON_MINUS,
+    Turntable::BUTTON_PLUS,
+    Turntable::BUTTON_EUPHORIA,
 }};
 
-constexpr std::array<const char*, 9> turntable_button_names{{
-    _trans("Green Left"), _trans("Red Left"), _trans("Blue Left"), _trans("Green Right"),
-    _trans("Red Right"), _trans("Blue Right"), "-", "+", _trans("Euphoria"),
+constexpr std::array<const char*, 6> turntable_button_names{{
+    _trans("Green Left"),
+    _trans("Red Left"),
+    _trans("Blue Left"),
+    _trans("Green Right"),
+    _trans("Red Right"),
+    _trans("Blue Right"),
 }};
 
 Turntable::Turntable(ExtensionReg& reg) : Attachment(_trans("Turntable"), reg)
 {
   // buttons
-  groups.emplace_back(m_buttons = new ControllerEmu::Buttons("Buttons"));
+  groups.emplace_back(m_buttons = new ControllerEmu::Buttons(_trans("Buttons")));
   for (auto& turntable_button_name : turntable_button_names)
-    m_buttons->controls.emplace_back(new ControllerEmu::Input(turntable_button_name));
+  {
+    m_buttons->controls.emplace_back(
+        new ControllerEmu::Input(ControllerEmu::Translate, turntable_button_name));
+  }
+
+  m_buttons->controls.emplace_back(new ControllerEmu::Input(ControllerEmu::DoNotTranslate, "-"));
+  m_buttons->controls.emplace_back(new ControllerEmu::Input(ControllerEmu::DoNotTranslate, "+"));
+
+  m_buttons->controls.emplace_back(
+      // i18n: This button name refers to a gameplay element in DJ Hero
+      new ControllerEmu::Input(ControllerEmu::Translate, _trans("Euphoria")));
 
   // turntables
-  groups.emplace_back(m_left_table = new ControllerEmu::Slider(_trans("Table Left")));
-  groups.emplace_back(m_right_table = new ControllerEmu::Slider(_trans("Table Right")));
+  // i18n: "Table" refers to a turntable
+  groups.emplace_back(m_left_table = new ControllerEmu::Slider("Table Left", _trans("Left Table")));
+  groups.emplace_back(m_right_table =
+                          // i18n: "Table" refers to a turntable
+                      new ControllerEmu::Slider("Table Right", _trans("Right Table")));
 
   // stick
-  groups.emplace_back(m_stick =
-                          new ControllerEmu::AnalogStick("Stick", DEFAULT_ATTACHMENT_STICK_RADIUS));
+  groups.emplace_back(
+      m_stick = new ControllerEmu::AnalogStick(_trans("Stick"), DEFAULT_ATTACHMENT_STICK_RADIUS));
 
   // effect dial
   groups.emplace_back(m_effect_dial = new ControllerEmu::Triggers(_trans("Effect")));
-  m_effect_dial->controls.emplace_back(new ControllerEmu::Input(_trans("Dial")));
+  m_effect_dial->controls.emplace_back(
+      new ControllerEmu::Input(ControllerEmu::Translate, _trans("Dial")));
 
   // crossfade
   groups.emplace_back(m_crossfade = new ControllerEmu::Slider(_trans("Crossfade")));
@@ -61,7 +85,7 @@ Turntable::Turntable(ExtensionReg& reg) : Attachment(_trans("Turntable"), reg)
 
 void Turntable::GetState(u8* const data)
 {
-  wm_turntable_extension* const ttdata = (wm_turntable_extension*)data;
+  wm_turntable_extension* const ttdata = reinterpret_cast<wm_turntable_extension*>(data);
   ttdata->bt = 0;
 
   // stick

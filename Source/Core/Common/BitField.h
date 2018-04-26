@@ -31,6 +31,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <limits>
 #include <type_traits>
 
@@ -121,52 +122,57 @@ private:
 public:
   // Force default constructor to be created
   // so that we can use this within unions
-  BitField() = default;
+  constexpr BitField() = default;
 
+// Visual Studio (as of VS2017) considers BitField to not be trivially
+// copyable if we delete this copy assignment operator.
+// https://developercommunity.visualstudio.com/content/problem/101208/c-compiler-is-overly-strict-regarding-whether-a-cl.html
+#ifndef _MSC_VER
   // We explicitly delete the copy assignment operator here, because the
   // default copy assignment would copy the full storage value, rather than
   // just the bits relevant to this particular bit field.
   // Ideally, we would just implement the copy assignment to copy only the
-  // relevant bits, but this requires compiler support for unrestricted
-  // unions.
-  // TODO: Implement this operator properly once all target compilers
-  // support unrestricted unions.
+  // relevant bits, but we're prevented from doing that because the savestate
+  // code expects that this class is trivially copyable.
   BitField& operator=(const BitField&) = delete;
+#endif
 
   __forceinline BitField& operator=(T val)
   {
-    storage = (storage & ~GetMask()) | ((val << position) & GetMask());
+    storage = (storage & ~GetMask()) | ((static_cast<StorageType>(val) << position) & GetMask());
     return *this;
   }
 
-  __forceinline T Value() const
-  {
-    if (std::numeric_limits<T>::is_signed)
-    {
-      std::size_t shift = 8 * sizeof(T) - bits;
-      return (T)((storage << (shift - position)) >> shift);
-    }
-    else
-    {
-      return (T)((storage & GetMask()) >> position);
-    }
-  }
+  constexpr T Value() const { return Value(std::is_signed<T>()); }
+  constexpr operator T() const { return Value(); }
+  constexpr std::size_t StartBit() const { return position; }
+  constexpr std::size_t NumBits() const { return bits; }
 
-  __forceinline operator T() const { return Value(); }
 private:
   // StorageType is T for non-enum types and the underlying type of T if
   // T is an enumeration. Note that T is wrapped within an enable_if in the
   // former case to workaround compile errors which arise when using
   // std::underlying_type<T>::type directly.
-  typedef typename std::conditional<std::is_enum<T>::value, std::underlying_type<T>,
-                                    std::enable_if<true, T>>::type::type StorageType;
+  using StorageType = typename std::conditional_t<std::is_enum<T>::value, std::underlying_type<T>,
+                                                  std::enable_if<true, T>>::type;
 
   // Unsigned version of StorageType
-  typedef typename std::make_unsigned<StorageType>::type StorageTypeU;
+  using StorageTypeU = std::make_unsigned_t<StorageType>;
 
-  __forceinline StorageType GetMask() const
+  constexpr T Value(std::true_type) const
   {
-    return (((StorageTypeU)~0) >> (8 * sizeof(T) - bits)) << position;
+    using shift_amount = std::integral_constant<size_t, 8 * sizeof(T) - bits>;
+    return static_cast<T>((storage << (shift_amount() - position)) >> shift_amount());
+  }
+
+  constexpr T Value(std::false_type) const
+  {
+    return static_cast<T>((storage & GetMask()) >> position);
+  }
+
+  static constexpr StorageType GetMask()
+  {
+    return (std::numeric_limits<StorageTypeU>::max() >> (8 * sizeof(T) - bits)) << position;
   }
 
   StorageType storage;

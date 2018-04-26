@@ -10,12 +10,15 @@
 
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
+#include "Common/Config/Config.h"
 #include "Common/Logging/Log.h"
 #include "Common/MathUtil.h"
 
+#include "Core/Config/SYSCONFSettings.h"
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
+#include "Core/FifoPlayer/FifoPlayer.h"
 #include "Core/HW/MMIO.h"
 #include "Core/HW/ProcessorInterface.h"
 #include "Core/HW/SI/SI.h"
@@ -42,8 +45,8 @@ static UVIFBInfoRegister m_XFBInfoTop;
 static UVIFBInfoRegister m_XFBInfoBottom;
 static UVIFBInfoRegister m_3DFBInfoTop;  // Start making your stereoscopic demos! :p
 static UVIFBInfoRegister m_3DFBInfoBottom;
-static UVIInterruptRegister m_InterruptRegister[4];
-static UVILatchRegister m_LatchRegister[2];
+static std::array<UVIInterruptRegister, 4> m_InterruptRegister;
+static std::array<UVILatchRegister, 2> m_LatchRegister;
 static PictureConfigurationRegister m_PictureConfiguration;
 static UVIHorizontalScaling m_HorizontalScaling;
 static SVIFilterCoefTables m_FilterCoefTables;
@@ -57,9 +60,10 @@ static UVIBorderBlankRegister m_BorderHBlank;
 
 static u32 s_target_refresh_rate = 0;
 
-static u32 s_clock_freqs[2] = {
-    27000000UL, 54000000UL,
-};
+static constexpr std::array<u32, 2> s_clock_freqs{{
+    27000000,
+    54000000,
+}};
 
 static u64 s_ticks_last_line_start;  // number of ticks when the current full scanline started
 static u32 s_half_line_count;        // number of halflines that have occurred for this full frame
@@ -164,8 +168,7 @@ void Preset(bool _bNTSC)
   m_InterruptRegister[2].Hex = 0;
   m_InterruptRegister[3].Hex = 0;
 
-  m_LatchRegister[0].Hex = 0;
-  m_LatchRegister[1].Hex = 0;
+  m_LatchRegister = {};
 
   m_PictureConfiguration.STD = 40;
   m_PictureConfiguration.WPL = 40;
@@ -180,8 +183,8 @@ void Preset(bool _bNTSC)
   m_Clock = DiscIO::IsNTSC(region);
 
   // Say component cable is plugged
-  m_DTVStatus.component_plugged = SConfig::GetInstance().bProgressive;
-  m_DTVStatus.ntsc_j = SConfig::GetInstance().bForceNTSCJ || region == DiscIO::Region::NTSC_J;
+  m_DTVStatus.component_plugged = Config::Get(Config::SYSCONF_PROGRESSIVE_SCAN);
+  m_DTVStatus.ntsc_j = region == DiscIO::Region::NTSC_J;
 
   m_FBWidth.Hex = 0;
   m_BorderHBlank.Hex = 0;
@@ -201,11 +204,13 @@ void Init()
 
 void RegisterMMIO(MMIO::Mapping* mmio, u32 base)
 {
-  struct
+  struct MappedVar
   {
     u32 addr;
     u16* ptr;
-  } directly_mapped_vars[] = {
+  };
+
+  std::array<MappedVar, 46> directly_mapped_vars{{
       {VI_VERTICAL_TIMING, &m_VerticalTimingRegister.Hex},
       {VI_HORIZONTAL_TIMING_0_HI, &m_HTiming0.Hi},
       {VI_HORIZONTAL_TIMING_0_LO, &m_HTiming0.Lo},
@@ -252,7 +257,7 @@ void RegisterMMIO(MMIO::Mapping* mmio, u32 base)
       {VI_FBWIDTH, &m_FBWidth.Hex},
       {VI_BORDER_BLANK_END, &m_BorderHBlank.Lo},
       {VI_BORDER_BLANK_START, &m_BorderHBlank.Hi},
-  };
+  }};
 
   // Declare all the boilerplate direct MMIOs.
   for (auto& mapped_var : directly_mapped_vars)
@@ -261,11 +266,7 @@ void RegisterMMIO(MMIO::Mapping* mmio, u32 base)
                    MMIO::DirectWrite<u16>(mapped_var.ptr));
   }
 
-  struct
-  {
-    u32 addr;
-    u16* ptr;
-  } update_params_on_read_vars[] = {
+  std::array<MappedVar, 8> update_params_on_read_vars{{
       {VI_VERTICAL_TIMING, &m_VerticalTimingRegister.Hex},
       {VI_HORIZONTAL_TIMING_0_HI, &m_HTiming0.Hi},
       {VI_HORIZONTAL_TIMING_0_LO, &m_HTiming0.Lo},
@@ -274,7 +275,7 @@ void RegisterMMIO(MMIO::Mapping* mmio, u32 base)
       {VI_VBLANK_TIMING_EVEN_HI, &m_VBlankTimingEven.Hi},
       {VI_VBLANK_TIMING_EVEN_LO, &m_VBlankTimingEven.Lo},
       {VI_CLOCK, &m_Clock},
-  };
+  }};
 
   // Declare all the MMIOs that update timing params.
   for (auto& mapped_var : update_params_on_read_vars)
@@ -323,10 +324,9 @@ void RegisterMMIO(MMIO::Mapping* mmio, u32 base)
       }));
   mmio->Register(
       base | VI_HORIZONTAL_BEAM_POSITION, MMIO::ComplexRead<u16>([](u32) {
-        u16 value =
-            static_cast<u16>(1 +
-                             m_HTiming0.HLW * (CoreTiming::GetTicks() - s_ticks_last_line_start) /
-                                 (GetTicksPerHalfLine()));
+        u16 value = static_cast<u16>(1 + m_HTiming0.HLW *
+                                             (CoreTiming::GetTicks() - s_ticks_last_line_start) /
+                                             (GetTicksPerHalfLine()));
         return MathUtil::Clamp(value, static_cast<u16>(1), static_cast<u16>(m_HTiming0.HLW * 2));
       }),
       MMIO::ComplexWrite<u16>([](u32, u16 val) {
@@ -391,10 +391,7 @@ void RegisterMMIO(MMIO::Mapping* mmio, u32 base)
                    {
                      // shuffle2 clear all data, reset to default vals, and enter idle mode
                      m_DisplayControlRegister.RST = 0;
-                     for (UVIInterruptRegister& reg : m_InterruptRegister)
-                     {
-                       reg.Hex = 0;
-                     }
+                     m_InterruptRegister = {};
                      UpdateInterrupts();
                    }
 
@@ -553,8 +550,9 @@ float GetAspectRatio()
 
   // 5. Calculate the final ratio and scale to 4:3
   float ratio = horizontal_active_ratio / vertical_active_ratio;
-  if (std::isnormal(
-          ratio))  // Check we have a sane ratio and haven't propagated any infs/nans/zeros
+  bool running_fifo_log = FifoPlayer::GetInstance().IsRunningWithFakeVideoInterfaceUpdates();
+  if (std::isnormal(ratio) &&      // Check we have a sane ratio without any infs/nans/zeros
+      !running_fifo_log)           // we don't know the correct ratio for fifos
     return ratio * (4.0f / 3.0f);  // Scale to 4:3
   else
     return (4.0f / 3.0f);  // VI isn't initialized correctly, just return 4:3 instead
@@ -646,13 +644,15 @@ static void LogField(FieldType field, u32 xfb_address)
   static constexpr std::array<const char*, 2> field_type_names{{"Odd", "Even"}};
 
   static const std::array<const UVIVBlankTimingRegister*, 2> vert_timing{{
-      &m_VBlankTimingOdd, &m_VBlankTimingEven,
+      &m_VBlankTimingOdd,
+      &m_VBlankTimingEven,
   }};
 
   const auto field_index = static_cast<size_t>(field);
 
-  DEBUG_LOG(VIDEOINTERFACE, "(VI->BeginField): Address: %.08X | WPL %u | STD %u | EQ %u | PRB %u | "
-                            "ACV %u | PSB %u | Field %s",
+  DEBUG_LOG(VIDEOINTERFACE,
+            "(VI->BeginField): Address: %.08X | WPL %u | STD %u | EQ %u | PRB %u | "
+            "ACV %u | PSB %u | Field %s",
             xfb_address, m_PictureConfiguration.WPL, m_PictureConfiguration.STD,
             m_VerticalTimingRegister.EQU, vert_timing[field_index]->PRB,
             m_VerticalTimingRegister.ACV, vert_timing[field_index]->PSB,
@@ -777,6 +777,46 @@ void Update(u64 ticks)
   }
 
   UpdateInterrupts();
+}
+
+// Create a fake VI mode for a fifolog
+void FakeVIUpdate(u32 xfb_address, u32 fb_width, u32 fb_height)
+{
+  u32 fb_stride = fb_width;
+
+  bool interlaced = fb_height > 480 / 2;
+  if (interlaced)
+  {
+    fb_height = fb_height / 2;
+    fb_stride = fb_stride * 2;
+  }
+
+  m_XFBInfoTop.POFF = 1;
+  m_XFBInfoBottom.POFF = 1;
+  m_VerticalTimingRegister.ACV = fb_height;
+  m_VerticalTimingRegister.EQU = 6;
+  m_VBlankTimingOdd.PRB = 502 - fb_height * 2;
+  m_VBlankTimingOdd.PSB = 5;
+  m_VBlankTimingEven.PRB = 503 - fb_height * 2;
+  m_VBlankTimingEven.PSB = 4;
+  m_PictureConfiguration.WPL = fb_width / 16;
+  m_PictureConfiguration.STD = fb_stride / 16;
+
+  UpdateParameters();
+
+  u32 total_halflines = GetHalfLinesPerEvenField() + GetHalfLinesPerOddField();
+
+  if ((s_half_line_count - s_even_field_first_hl) % total_halflines <
+      (s_half_line_count - s_odd_field_first_hl) % total_halflines)
+  {
+    // Even/Bottom field is next.
+    m_XFBInfoBottom.FBB = interlaced ? (xfb_address + fb_width * 2) >> 5 : xfb_address >> 5;
+  }
+  else
+  {
+    // Odd/Top field is next
+    m_XFBInfoTop.FBB = (xfb_address >> 5);
+  }
 }
 
 }  // namespace

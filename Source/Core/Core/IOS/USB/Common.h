@@ -44,6 +44,7 @@ constexpr u16 USBHDR(u8 dir, u8 type, u8 recipient, u8 request)
 
 struct DeviceDescriptor
 {
+  void Swap();
   u8 bLength;
   u8 bDescriptorType;
   u16 bcdUSB;
@@ -62,6 +63,7 @@ struct DeviceDescriptor
 
 struct ConfigDescriptor
 {
+  void Swap();
   u8 bLength;
   u8 bDescriptorType;
   u16 wTotalLength;
@@ -74,6 +76,7 @@ struct ConfigDescriptor
 
 struct InterfaceDescriptor
 {
+  void Swap();
   u8 bLength;
   u8 bDescriptorType;
   u8 bInterfaceNumber;
@@ -87,6 +90,7 @@ struct InterfaceDescriptor
 
 struct EndpointDescriptor
 {
+  void Swap();
   u8 bLength;
   u8 bDescriptorType;
   u8 bEndpointAddress;
@@ -100,15 +104,19 @@ struct TransferCommand
   Request ios_request;
   u32 data_address = 0;
 
-  TransferCommand(const Request& ios_request_, u32 data_address_)
-      : ios_request(ios_request_), data_address(data_address_)
+  TransferCommand(Kernel& ios, const Request& ios_request_, u32 data_address_)
+      : ios_request(ios_request_), data_address(data_address_), m_ios(ios)
   {
   }
   virtual ~TransferCommand() = default;
-  // Called after a transfer has completed and before replying to the transfer request.
-  virtual void OnTransferComplete() const {}
+  // Called after a transfer has completed to reply to the IPC request.
+  // This can be overridden for additional processing before replying.
+  virtual void OnTransferComplete(s32 return_value) const;
   std::unique_ptr<u8[]> MakeBuffer(size_t size) const;
   void FillBuffer(const u8* src, size_t size) const;
+
+private:
+  Kernel& m_ios;
 };
 
 struct CtrlMessage : TransferCommand
@@ -154,8 +162,6 @@ public:
   u16 GetVid() const;
   u16 GetPid() const;
   bool HasClass(u8 device_class) const;
-  std::vector<u8> GetDescriptorsUSBV4() const;
-  std::vector<u8> GetDescriptorsUSBV5(u8 interface, u8 alt_setting) const;
 
   virtual DeviceDescriptor GetDeviceDescriptor() const = 0;
   virtual std::vector<ConfigDescriptor> GetConfigurations() const = 0;
@@ -174,7 +180,6 @@ public:
   virtual int SubmitTransfer(std::unique_ptr<IsoMessage> message) = 0;
 
 protected:
-  std::vector<u8> GetDescriptors(std::function<bool(const InterfaceDescriptor&)> predicate) const;
   u64 m_id = 0xFFFFFFFFFFFFFFFF;
 };
 }  // namespace USB

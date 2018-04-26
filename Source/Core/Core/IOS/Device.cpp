@@ -2,15 +2,17 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include "Core/IOS/Device.h"
+
 #include <algorithm>
 #include <map>
 
+#include "Common/Assert.h"
 #include "Common/Logging/Log.h"
 #include "Common/StringUtil.h"
 #include "Core/HW/Memmap.h"
 #include "Core/HW/SystemTimers.h"
-#include "Core/IOS/Device.h"
-#include "Core/IOS/IPC.h"
+#include "Core/IOS/IOS.h"
 
 namespace IOS
 {
@@ -26,6 +28,12 @@ OpenRequest::OpenRequest(const u32 address_) : Request(address_)
 {
   path = Memory::GetString(Memory::Read_U32(address + 0xc));
   flags = static_cast<OpenMode>(Memory::Read_U32(address + 0x10));
+  const Kernel* ios = GetIOS();
+  if (ios)
+  {
+    uid = ios->GetUidForPPC();
+    gid = ios->GetGidForPPC();
+  }
 }
 
 ReadWriteRequest::ReadWriteRequest(const u32 address_) : Request(address_)
@@ -70,10 +78,12 @@ IOCtlVRequest::IOCtlVRequest(const u32 address_) : Request(address_)
   }
 }
 
-bool IOCtlVRequest::HasInputVectorWithAddress(const u32 vector_address) const
+const IOCtlVRequest::IOVector* IOCtlVRequest::GetVector(size_t index) const
 {
-  return std::any_of(in_vectors.begin(), in_vectors.end(),
-                     [&](const auto& in_vector) { return in_vector.address == vector_address; });
+  ASSERT(index < (in_vectors.size() + io_vectors.size()));
+  if (index < in_vectors.size())
+    return &in_vectors[index];
+  return &io_vectors[index - in_vectors.size()];
 }
 
 bool IOCtlVRequest::HasNumberOfValidVectors(const size_t in_count, const size_t io_count) const
@@ -133,8 +143,8 @@ void IOCtlVRequest::DumpUnknown(const std::string& description, LogTypes::LOG_TY
 
 namespace Device
 {
-Device::Device(const u32 device_id, const std::string& device_name, const DeviceType type)
-    : m_name(device_name), m_device_id(device_id), m_device_type(type)
+Device::Device(Kernel& ios, const std::string& device_name, const DeviceType type)
+    : m_ios(ios), m_name(device_name), m_device_type(type)
 {
 }
 
@@ -147,20 +157,20 @@ void Device::DoState(PointerWrap& p)
 void Device::DoStateShared(PointerWrap& p)
 {
   p.Do(m_name);
-  p.Do(m_device_id);
   p.Do(m_device_type);
   p.Do(m_is_active);
 }
 
-ReturnCode Device::Open(const OpenRequest& request)
+IPCCommandResult Device::Open(const OpenRequest& request)
 {
   m_is_active = true;
-  return IPC_SUCCESS;
+  return GetDefaultReply(IPC_SUCCESS);
 }
 
-void Device::Close()
+IPCCommandResult Device::Close(u32 fd)
 {
   m_is_active = false;
+  return GetDefaultReply(IPC_SUCCESS);
 }
 
 IPCCommandResult Device::Unsupported(const Request& request)
@@ -174,10 +184,18 @@ IPCCommandResult Device::Unsupported(const Request& request)
   return GetDefaultReply(IPC_EINVAL);
 }
 
-// Returns an IPCCommandResult for a reply that takes 250 us (arbitrarily chosen value)
+// Returns an IPCCommandResult for a reply with an average reply time for devices
+// Please avoid using this function if more accurate timings are known.
 IPCCommandResult Device::GetDefaultReply(const s32 return_value)
 {
-  return {return_value, true, SystemTimers::GetTicksPerSecond() / 4000};
+  // Based on a hardware test, a device takes at least ~2700 ticks to reply to an IPC request.
+  // Depending on how much work a command performs, this can take much longer (10000+)
+  // especially if the NAND filesystem is accessed.
+  //
+  // Because we currently don't emulate timing very accurately, we should not return
+  // the minimum possible reply time (~960 ticks from the kernel or ~2700 from devices)
+  // but an average time, otherwise we are going to be much too fast in most cases.
+  return {return_value, true, 4000 * SystemTimers::TIMER_RATIO};
 }
 
 // Returns an IPCCommandResult with no reply. Useful for async commands that will generate a reply

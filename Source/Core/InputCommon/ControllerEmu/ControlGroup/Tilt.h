@@ -4,8 +4,10 @@
 
 #pragma once
 
+#include <array>
 #include <string>
 #include "InputCommon/ControllerEmu/ControlGroup/ControlGroup.h"
+#include "InputCommon/ControllerInterface/Device.h"
 
 namespace ControllerEmu
 {
@@ -17,6 +19,6 @@ public:
   void GetState(ControlState* x, ControlState* y, bool step = true);
 
 private:
-  ControlState m_tilt[2];
+  std::array<ControlState, 2> m_tilt{};
 };
 }  // namespace ControllerEmu

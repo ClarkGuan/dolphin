@@ -97,7 +97,13 @@ void StreamBuffer::AllocMemory(u32 size)
     glClientWaitSync(m_fences[i], GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED);
     glDeleteSync(m_fences[i]);
   }
-  m_free_iterator = m_iterator + size;
+
+  // If we allocate a large amount of memory (A), commit a smaller amount, then allocate memory
+  // smaller than allocation A, we will have already waited for these fences in A, but not used
+  // the space. In this case, don't set m_free_iterator to a position before that which we know
+  // is safe to use, which would result in waiting on the same fence(s) next time.
+  if ((m_iterator + size) > m_free_iterator)
+    m_free_iterator = m_iterator + size;
 
   // if buffer is full
   if (m_iterator + size >= m_size)
@@ -220,11 +226,13 @@ public:
     // COHERENT_BIT is set so we don't have to use a MemoryBarrier on write
     // CLIENT_STORAGE_BIT is set since we access the buffer more frequently on the client side then
     // server side
-    glBufferStorage(m_buffertype, m_size, nullptr, GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT |
-                                                       (coherent ? GL_MAP_COHERENT_BIT : 0));
-    m_pointer = (u8*)glMapBufferRange(
-        m_buffertype, 0, m_size, GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT |
-                                     (coherent ? GL_MAP_COHERENT_BIT : GL_MAP_FLUSH_EXPLICIT_BIT));
+    glBufferStorage(m_buffertype, m_size, nullptr,
+                    GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT |
+                        (coherent ? GL_MAP_COHERENT_BIT : 0));
+    m_pointer =
+        (u8*)glMapBufferRange(m_buffertype, 0, m_size,
+                              GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT |
+                                  (coherent ? GL_MAP_COHERENT_BIT : GL_MAP_FLUSH_EXPLICIT_BIT));
   }
 
   ~BufferStorage()
@@ -356,8 +364,7 @@ std::unique_ptr<StreamBuffer> StreamBuffer::Create(u32 type, u32 size)
   {
     // pinned memory is much faster than buffer storage on AMD cards
     if (g_ogl_config.bSupportsGLPinnedMemory &&
-        !(DriverDetails::HasBug(DriverDetails::BUG_BROKEN_PINNED_MEMORY) &&
-          type == GL_ELEMENT_ARRAY_BUFFER))
+        !(DriverDetails::HasBug(DriverDetails::BUG_BROKEN_PINNED_MEMORY)))
       return std::make_unique<PinnedMemory>(type, size);
 
     // buffer storage works well in most situations
@@ -371,7 +378,12 @@ std::unique_ptr<StreamBuffer> StreamBuffer::Create(u32 type, u32 size)
 
     // don't fall back to MapAnd* for Nvidia drivers
     if (DriverDetails::HasBug(DriverDetails::BUG_BROKEN_UNSYNC_MAPPING))
-      return std::make_unique<BufferSubData>(type, size);
+    {
+      if (DriverDetails::HasBug(DriverDetails::BUG_BROKEN_BUFFER_STREAM))
+        return std::make_unique<BufferData>(type, size);
+      else
+        return std::make_unique<BufferSubData>(type, size);
+    }
 
     // mapping fallback
     if (g_ogl_config.bSupportsGLSync)

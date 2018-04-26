@@ -9,20 +9,20 @@
 #include <array>
 #include <memory>
 
-#include "Common/CommonFuncs.h"
 #include "Common/CommonTypes.h"
 #include "Common/Event.h"
 #include "Common/Hash.h"
-#include "Common/Logging/Log.h"
 #include "Common/MemoryUtil.h"
 #include "Common/MsgHandler.h"
 
+#include "Core/DSP/DSPAccelerator.h"
 #include "Core/DSP/DSPAnalyzer.h"
 #include "Core/DSP/DSPHWInterface.h"
 #include "Core/DSP/DSPHost.h"
 #include "Core/DSP/Interpreter/DSPIntUtil.h"
 #include "Core/DSP/Interpreter/DSPInterpreter.h"
-#include "Core/DSP/Jit/DSPEmitter.h"
+#include "Core/DSP/Jit/x64/DSPEmitter.h"
+#include "Core/HW/DSP.h"
 
 namespace DSP
 {
@@ -30,7 +30,7 @@ SDSP g_dsp;
 DSPBreakpoints g_dsp_breakpoints;
 static State core_state = State::Stopped;
 bool g_init_hax = false;
-std::unique_ptr<JIT::x86::DSPEmitter> g_dsp_jit;
+std::unique_ptr<JIT::x64::DSPEmitter> g_dsp_jit;
 std::unique_ptr<DSPCaptureLogger> g_dsp_cap;
 static Common::Event step_event;
 
@@ -43,19 +43,26 @@ static bool VerifyRoms()
     u32 hash_drom;  // dsp_coef.bin
   };
 
-  static const std::array<DspRomHashes, 4> known_roms = {
-      {// Official Nintendo ROM
-       {0x66f334fe, 0xf3b93527},
+  static const std::array<DspRomHashes, 6> known_roms = {{
+      // Official Nintendo ROM
+      {0x66f334fe, 0xf3b93527},
 
-       // LM1234 replacement ROM (Zelda UCode only)
-       {0x9c8f593c, 0x10000001},
+      // LM1234 replacement ROM (Zelda UCode only)
+      {0x9c8f593c, 0x10000001},
 
-       // delroth's improvement on LM1234 replacement ROM (Zelda and AX only,
-       // IPL/Card/GBA still broken)
-       {0xd9907f71, 0xb019c2fb},
+      // delroth's improvement on LM1234 replacement ROM (Zelda and AX only,
+      // IPL/Card/GBA still broken)
+      {0xd9907f71, 0xb019c2fb},
 
-       // above with improved resampling coefficients
-       {0xd9907f71, 0xdb6880c1}}};
+      // above with improved resampling coefficients
+      {0xd9907f71, 0xdb6880c1},
+
+      // above with support for GBA ucode
+      {0x3aa4a793, 0xa4a575f5},
+
+      // above with fix to skip bootucode_ax when running from ROM entrypoint
+      {0x128ea7a2, 0xa4a575f5},
+  }};
 
   u32 hash_irom = HashAdler32((u8*)g_dsp.irom, DSP_IROM_BYTE_SIZE);
   u32 hash_drom = HashAdler32((u8*)g_dsp.coef, DSP_COEF_BYTE_SIZE);
@@ -84,8 +91,14 @@ static bool VerifyRoms()
   else if (rom_idx == 2 || rom_idx == 3)
   {
     Host::OSD_AddMessage("You are using a free DSP ROM made by the Dolphin Team.", 8000);
-    Host::OSD_AddMessage("All Wii games will work correctly, and most GC games should ", 8000);
-    Host::OSD_AddMessage("also work fine, but the GBA/IPL/CARD UCodes will not work.", 8000);
+    Host::OSD_AddMessage("All Wii games will work correctly, and most GameCube games", 8000);
+    Host::OSD_AddMessage("should also work fine, but the GBA/CARD UCodes will not work.", 8000);
+  }
+  else if (rom_idx == 4)
+  {
+    Host::OSD_AddMessage("You are using a free DSP ROM made by the Dolphin Team.", 8000);
+    Host::OSD_AddMessage("All Wii games will work correctly, and most GameCube games", 8000);
+    Host::OSD_AddMessage("should also work fine, but the CARD UCode will not work.", 8000);
   }
 
   return true;
@@ -100,10 +113,20 @@ static void DSPCore_FreeMemoryPages()
   g_dsp.irom = g_dsp.iram = g_dsp.dram = g_dsp.coef = nullptr;
 }
 
+class LLEAccelerator final : public Accelerator
+{
+protected:
+  u8 ReadMemory(u32 address) override { return Host::ReadHostMemory(address); }
+  void WriteMemory(u32 address, u8 value) override { Host::WriteHostMemory(value, address); }
+  void OnEndException() override { DSPCore_SetException(EXP_ACCOV); }
+};
+
 bool DSPCore_Init(const DSPInitOptions& opts)
 {
   g_dsp.step_counter = 0;
   g_init_hax = false;
+
+  g_dsp.accelerator = std::make_unique<LLEAccelerator>();
 
   g_dsp.irom = static_cast<u16*>(Common::AllocateMemoryPages(DSP_IROM_BYTE_SIZE));
   g_dsp.iram = static_cast<u16*>(Common::AllocateMemoryPages(DSP_IRAM_BYTE_SIZE));
@@ -148,7 +171,7 @@ bool DSPCore_Init(const DSPInitOptions& opts)
 
   // Initialize JIT, if necessary
   if (opts.core_type == DSPInitOptions::CORE_JIT)
-    g_dsp_jit = std::make_unique<JIT::x86::DSPEmitter>();
+    g_dsp_jit = std::make_unique<JIT::x64::DSPEmitter>();
 
   g_dsp_cap.reset(opts.capture_logger);
 
@@ -350,7 +373,7 @@ u16 DSPCore_ReadRegister(size_t reg)
   case DSP_REG_ACM1:
     return g_dsp.r.ac[reg - DSP_REG_ACM0].m;
   default:
-    _assert_msg_(DSP_CORE, 0, "cannot happen");
+    ASSERT_MSG(DSP_CORE, 0, "cannot happen");
     return 0;
   }
 }

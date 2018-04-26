@@ -11,22 +11,23 @@
 #include "InputCommon/ControllerEmu/Control/Control.h"
 #include "InputCommon/ControllerEmu/ControlGroup/Extension.h"
 #include "InputCommon/ControllerEmu/ControllerEmu.h"
+#include "InputCommon/ControllerEmu/Setting/BooleanSetting.h"
+#include "InputCommon/ControllerEmu/Setting/NumericSetting.h"
 
 namespace ControllerEmu
 {
-ControlGroup::ControlGroup(const std::string& name_, const u32 type_)
+ControlGroup::ControlGroup(const std::string& name_, const GroupType type_)
     : name(name_), ui_name(name_), type(type_)
 {
 }
 
-ControlGroup::ControlGroup(const std::string& name_, const std::string& ui_name_, const u32 type_)
+ControlGroup::ControlGroup(const std::string& name_, const std::string& ui_name_,
+                           const GroupType type_)
     : name(name_), ui_name(ui_name_), type(type_)
 {
 }
 
 ControlGroup::~ControlGroup() = default;
-
-ControlGroup::BooleanSetting::~BooleanSetting() = default;
 
 void ControlGroup::LoadConfig(IniFile::Section* sec, const std::string& defdev,
                               const std::string& base)
@@ -53,8 +54,12 @@ void ControlGroup::LoadConfig(IniFile::Section* sec, const std::string& defdev,
 
   for (auto& c : controls)
   {
-    // control expression
-    sec->Get(group + c->name, &c->control_ref->expression, "");
+    {
+      // control expression
+      std::string expression;
+      sec->Get(group + c->name, &expression, "");
+      c->control_ref->SetExpression(std::move(expression));
+    }
 
     // range
     sec->Get(group + c->name + "/Range", &c->control_ref->range, 100.0);
@@ -62,7 +67,7 @@ void ControlGroup::LoadConfig(IniFile::Section* sec, const std::string& defdev,
   }
 
   // extensions
-  if (type == GROUP_TYPE_EXTENSION)
+  if (type == GroupType::Extension)
   {
     Extension* const ext = (Extension*)this;
 
@@ -73,7 +78,7 @@ void ControlGroup::LoadConfig(IniFile::Section* sec, const std::string& defdev,
 
     for (auto& ai : ext->attachments)
     {
-      ai->default_device.FromString(defdev);
+      ai->SetDefaultDevice(defdev);
       ai->LoadConfig(sec, base + ai->GetName() + "/");
 
       if (ai->GetName() == extname)
@@ -108,14 +113,14 @@ void ControlGroup::SaveConfig(IniFile::Section* sec, const std::string& defdev,
   for (auto& c : controls)
   {
     // control expression
-    sec->Set(group + c->name, c->control_ref->expression, "");
+    sec->Set(group + c->name, c->control_ref->GetExpression(), "");
 
     // range
     sec->Set(group + c->name + "/Range", c->control_ref->range * 100.0, 100.0);
   }
 
   // extensions
-  if (type == GROUP_TYPE_EXTENSION)
+  if (type == GroupType::Extension)
   {
     Extension* const ext = (Extension*)this;
     sec->Set(base + name, ext->attachments[ext->switch_extension]->GetName(), "None");
@@ -127,6 +132,6 @@ void ControlGroup::SaveConfig(IniFile::Section* sec, const std::string& defdev,
 
 void ControlGroup::SetControlExpression(int index, const std::string& expression)
 {
-  controls.at(index)->control_ref->expression = expression;
+  controls.at(index)->control_ref->SetExpression(expression);
 }
 }  // namespace ControllerEmu

@@ -4,10 +4,13 @@
 
 #pragma once
 
+#include "Common/BitField.h"
 #include "Common/CommonTypes.h"
 #include "VideoCommon/CPMemory.h"
 
 class DataReader;
+
+constexpr size_t NUM_XF_COLOR_CHANNELS = 2;
 
 // Lighting
 
@@ -132,27 +135,15 @@ enum
 
 union LitChannel
 {
-  struct
-  {
-    u32 matsource : 1;
-    u32 enablelighting : 1;
-    u32 lightMask0_3 : 4;
-    u32 ambsource : 1;
-    u32 diffusefunc : 2;  // LIGHTDIF_X
-    u32 attnfunc : 2;     // LIGHTATTN_X
-    u32 lightMask4_7 : 4;
-  };
-  struct
-  {
-    u32 hex : 15;
-    u32 unused : 17;
-  };
-  struct
-  {
-    u32 dummy0 : 7;
-    u32 lightparams : 4;
-    u32 dummy1 : 21;
-  };
+  BitField<0, 1, u32> matsource;
+  BitField<1, 1, u32> enablelighting;
+  BitField<2, 4, u32> lightMask0_3;
+  BitField<6, 1, u32> ambsource;
+  BitField<7, 2, u32> diffusefunc;  // LIGHTDIF_X
+  BitField<9, 2, u32> attnfunc;     // LIGHTATTN_X
+  BitField<11, 4, u32> lightMask4_7;
+  u32 hex;
+
   unsigned int GetFullLightMask() const
   {
     return enablelighting ? (lightMask0_3 | (lightMask4_7 << 4)) : 0;
@@ -173,28 +164,22 @@ union INVTXSPEC
 
 union TexMtxInfo
 {
-  struct
-  {
-    u32 unknown : 1;
-    u32 projection : 1;  // XF_TEXPROJ_X
-    u32 inputform : 1;   // XF_TEXINPUT_X
-    u32 unknown2 : 1;
-    u32 texgentype : 3;         // XF_TEXGEN_X
-    u32 sourcerow : 5;          // XF_SRCGEOM_X
-    u32 embosssourceshift : 3;  // what generated texcoord to use
-    u32 embosslightshift : 3;   // light index that is used
-  };
+  BitField<0, 1, u32> unknown;             //
+  BitField<1, 1, u32> projection;          // XF_TEXPROJ_X
+  BitField<2, 1, u32> inputform;           // XF_TEXINPUT_X
+  BitField<3, 1, u32> unknown2;            //
+  BitField<4, 3, u32> texgentype;          // XF_TEXGEN_X
+  BitField<7, 5, u32> sourcerow;           // XF_SRCGEOM_X
+  BitField<12, 3, u32> embosssourceshift;  // what generated texcoord to use
+  BitField<15, 3, u32> embosslightshift;   // light index that is used
   u32 hex;
 };
 
 union PostMtxInfo
 {
-  struct
-  {
-    u32 index : 6;  // base row of dual transform matrix
-    u32 unused : 2;
-    u32 normalize : 1;  // normalize before send operation
-  };
+  BitField<0, 6, u32> index;      // base row of dual transform matrix
+  BitField<6, 2, u32> unused;     //
+  BitField<8, 1, u32> normalize;  // normalize before send operation
   u32 hex;
 };
 
@@ -266,42 +251,42 @@ struct Projection
 
 struct XFMemory
 {
-  float posMatrices[256];      // 0x0000 - 0x00ff
-  u32 unk0[768];               // 0x0100 - 0x03ff
-  float normalMatrices[96];    // 0x0400 - 0x045f
-  u32 unk1[160];               // 0x0460 - 0x04ff
-  float postMatrices[256];     // 0x0500 - 0x05ff
-  Light lights[8];             // 0x0600 - 0x067f
-  u32 unk2[2432];              // 0x0680 - 0x0fff
-  u32 error;                   // 0x1000
-  u32 diag;                    // 0x1001
-  u32 state0;                  // 0x1002
-  u32 state1;                  // 0x1003
-  u32 xfClock;                 // 0x1004
-  u32 clipDisable;             // 0x1005
-  u32 perf0;                   // 0x1006
-  u32 perf1;                   // 0x1007
-  INVTXSPEC hostinfo;          // 0x1008 number of textures,colors,normals from vertex input
-  NumColorChannel numChan;     // 0x1009
-  u32 ambColor[2];             // 0x100a, 0x100b
-  u32 matColor[2];             // 0x100c, 0x100d
-  LitChannel color[2];         // 0x100e, 0x100f
-  LitChannel alpha[2];         // 0x1010, 0x1011
-  DualTexInfo dualTexTrans;    // 0x1012
-  u32 unk3;                    // 0x1013
-  u32 unk4;                    // 0x1014
-  u32 unk5;                    // 0x1015
-  u32 unk6;                    // 0x1016
-  u32 unk7;                    // 0x1017
-  TMatrixIndexA MatrixIndexA;  // 0x1018
-  TMatrixIndexB MatrixIndexB;  // 0x1019
-  Viewport viewport;           // 0x101a - 0x101f
-  Projection projection;       // 0x1020 - 0x1026
-  u32 unk8[24];                // 0x1027 - 0x103e
-  NumTexGen numTexGen;         // 0x103f
-  TexMtxInfo texMtxInfo[8];    // 0x1040 - 0x1047
-  u32 unk9[8];                 // 0x1048 - 0x104f
-  PostMtxInfo postMtxInfo[8];  // 0x1050 - 0x1057
+  float posMatrices[256];    // 0x0000 - 0x00ff
+  u32 unk0[768];             // 0x0100 - 0x03ff
+  float normalMatrices[96];  // 0x0400 - 0x045f
+  u32 unk1[160];             // 0x0460 - 0x04ff
+  float postMatrices[256];   // 0x0500 - 0x05ff
+  Light lights[8];           // 0x0600 - 0x067f
+  u32 unk2[2432];            // 0x0680 - 0x0fff
+  u32 error;                 // 0x1000
+  u32 diag;                  // 0x1001
+  u32 state0;                // 0x1002
+  u32 state1;                // 0x1003
+  u32 xfClock;               // 0x1004
+  u32 clipDisable;           // 0x1005
+  u32 perf0;                 // 0x1006
+  u32 perf1;                 // 0x1007
+  INVTXSPEC hostinfo;        // 0x1008 number of textures,colors,normals from vertex input
+  NumColorChannel numChan;   // 0x1009
+  u32 ambColor[NUM_XF_COLOR_CHANNELS];      // 0x100a, 0x100b
+  u32 matColor[NUM_XF_COLOR_CHANNELS];      // 0x100c, 0x100d
+  LitChannel color[NUM_XF_COLOR_CHANNELS];  // 0x100e, 0x100f
+  LitChannel alpha[NUM_XF_COLOR_CHANNELS];  // 0x1010, 0x1011
+  DualTexInfo dualTexTrans;                 // 0x1012
+  u32 unk3;                                 // 0x1013
+  u32 unk4;                                 // 0x1014
+  u32 unk5;                                 // 0x1015
+  u32 unk6;                                 // 0x1016
+  u32 unk7;                                 // 0x1017
+  TMatrixIndexA MatrixIndexA;               // 0x1018
+  TMatrixIndexB MatrixIndexB;               // 0x1019
+  Viewport viewport;                        // 0x101a - 0x101f
+  Projection projection;                    // 0x1020 - 0x1026
+  u32 unk8[24];                             // 0x1027 - 0x103e
+  NumTexGen numTexGen;                      // 0x103f
+  TexMtxInfo texMtxInfo[8];                 // 0x1040 - 0x1047
+  u32 unk9[8];                              // 0x1048 - 0x104f
+  PostMtxInfo postMtxInfo[8];               // 0x1050 - 0x1057
 };
 
 extern XFMemory xfmem;

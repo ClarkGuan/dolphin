@@ -5,14 +5,16 @@
 #include "VideoBackends/Software/TransformUnit.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstring>
 
 #include "Common/Assert.h"
-#include "Common/CommonFuncs.h"
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
 #include "Common/MathUtil.h"
 #include "Common/MsgHandler.h"
+#include "Common/Swap.h"
 
 #include "VideoBackends/Software/NativeVertexFormat.h"
 #include "VideoBackends/Software/Vec3.h"
@@ -127,7 +129,7 @@ static void TransformTexCoordRegular(const TexMtxInfo& texinfo, int coordNum, bo
     src = srcVertex->normal[2];
     break;
   default:
-    _assert_(texinfo.sourcerow >= XF_SRCTEX0_INROW && texinfo.sourcerow <= XF_SRCTEX7_INROW);
+    ASSERT(texinfo.sourcerow >= XF_SRCTEX0_INROW && texinfo.sourcerow <= XF_SRCTEX7_INROW);
     src.x = srcVertex->texCoords[texinfo.sourcerow - XF_SRCTEX0_INROW][0];
     src.y = srcVertex->texCoords[texinfo.sourcerow - XF_SRCTEX0_INROW][1];
     src.z = 1.0f;
@@ -146,7 +148,7 @@ static void TransformTexCoordRegular(const TexMtxInfo& texinfo, int coordNum, bo
   }
   else  // texinfo.projection == XF_TEXPROJ_STQ
   {
-    _assert_(!specialCase);
+    ASSERT(!specialCase);
 
     if (texinfo.inputform == XF_TEXINPUT_AB11)
       MultiplyVec2Mat34(src, mat, *dst);
@@ -265,7 +267,7 @@ static float CalculateLightAttn(const LightPointer* light, Vec3* _ldir, const Ve
   return attn;
 }
 
-static void LightColor(const Vec3& pos, const Vec3& normal, u8 lightNum, LitChannel& chan,
+static void LightColor(const Vec3& pos, const Vec3& normal, u8 lightNum, const LitChannel& chan,
                        Vec3& lightCol)
 {
   const LightPointer* light = (const LightPointer*)&xfmem.lights[lightNum];
@@ -287,7 +289,7 @@ static void LightColor(const Vec3& pos, const Vec3& normal, u8 lightNum, LitChan
     AddScaledIntegerColor(light->color, attn * difAttn, lightCol);
     break;
   default:
-    _assert_(0);
+    ASSERT(0);
   }
 }
 
@@ -313,24 +315,24 @@ static void LightAlpha(const Vec3& pos, const Vec3& normal, u8 lightNum, const L
     lightCol += light->color[0] * attn * difAttn;
     break;
   default:
-    _assert_(0);
+    ASSERT(0);
   }
 }
 
 void TransformColor(const InputVertexData* src, OutputVertexData* dst)
 {
-  for (u32 chan = 0; chan < xfmem.numChan.numColorChans; chan++)
+  for (u32 chan = 0; chan < NUM_XF_COLOR_CHANNELS; chan++)
   {
     // abgr
-    u8 matcolor[4];
-    u8 chancolor[4];
+    std::array<u8, 4> matcolor;
+    std::array<u8, 4> chancolor;
 
     // color
-    LitChannel& colorchan = xfmem.color[chan];
+    const LitChannel& colorchan = xfmem.color[chan];
     if (colorchan.matsource)
-      *(u32*)matcolor = *(u32*)src->color[chan];  // vertex
+      matcolor = src->color[chan];  // vertex
     else
-      *(u32*)matcolor = xfmem.matColor[chan];
+      std::memcpy(matcolor.data(), &xfmem.matColor[chan], sizeof(u32));
 
     if (colorchan.enablelighting)
     {
@@ -344,7 +346,7 @@ void TransformColor(const InputVertexData* src, OutputVertexData* dst)
       }
       else
       {
-        u8* ambColor = (u8*)&xfmem.ambColor[chan];
+        const u8* ambColor = reinterpret_cast<u8*>(&xfmem.ambColor[chan]);
         lightCol.x = ambColor[1];
         lightCol.y = ambColor[2];
         lightCol.z = ambColor[3];
@@ -366,11 +368,11 @@ void TransformColor(const InputVertexData* src, OutputVertexData* dst)
     }
     else
     {
-      *(u32*)chancolor = *(u32*)matcolor;
+      chancolor = matcolor;
     }
 
     // alpha
-    LitChannel& alphachan = xfmem.alpha[chan];
+    const LitChannel& alphachan = xfmem.alpha[chan];
     if (alphachan.matsource)
       matcolor[0] = src->color[chan][0];  // vertex
     else
@@ -382,7 +384,7 @@ void TransformColor(const InputVertexData* src, OutputVertexData* dst)
       if (alphachan.ambsource)
         lightCol = src->color[chan][0];  // vertex
       else
-        lightCol = (float)(xfmem.ambColor[chan] & 0xff);
+        lightCol = static_cast<float>(xfmem.ambColor[chan] & 0xff);
 
       u8 mask = alphachan.GetFullLightMask();
       for (int i = 0; i < 8; ++i)
@@ -400,7 +402,8 @@ void TransformColor(const InputVertexData* src, OutputVertexData* dst)
     }
 
     // abgr -> rgba
-    *(u32*)dst->color[chan] = Common::swap32(*(u32*)chancolor);
+    const u32 rgba_color = Common::swap32(chancolor.data());
+    std::memcpy(dst->color[chan].data(), &rgba_color, sizeof(u32));
   }
 }
 
@@ -429,21 +432,21 @@ void TransformTexCoord(const InputVertexData* src, OutputVertexData* dst, bool s
     }
     break;
     case XF_TEXGEN_COLOR_STRGBC0:
-      _assert_(texinfo.sourcerow == XF_SRCCOLORS_INROW);
-      _assert_(texinfo.inputform == XF_TEXINPUT_AB11);
+      ASSERT(texinfo.sourcerow == XF_SRCCOLORS_INROW);
+      ASSERT(texinfo.inputform == XF_TEXINPUT_AB11);
       dst->texCoords[coordNum].x = (float)dst->color[0][0] / 255.0f;
       dst->texCoords[coordNum].y = (float)dst->color[0][1] / 255.0f;
       dst->texCoords[coordNum].z = 1.0f;
       break;
     case XF_TEXGEN_COLOR_STRGBC1:
-      _assert_(texinfo.sourcerow == XF_SRCCOLORS_INROW);
-      _assert_(texinfo.inputform == XF_TEXINPUT_AB11);
+      ASSERT(texinfo.sourcerow == XF_SRCCOLORS_INROW);
+      ASSERT(texinfo.inputform == XF_TEXINPUT_AB11);
       dst->texCoords[coordNum].x = (float)dst->color[1][0] / 255.0f;
       dst->texCoords[coordNum].y = (float)dst->color[1][1] / 255.0f;
       dst->texCoords[coordNum].z = 1.0f;
       break;
     default:
-      ERROR_LOG(VIDEO, "Bad tex gen type %i", texinfo.texgentype);
+      ERROR_LOG(VIDEO, "Bad tex gen type %i", texinfo.texgentype.Value());
     }
   }
 

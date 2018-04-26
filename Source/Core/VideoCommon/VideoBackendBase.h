@@ -35,8 +35,6 @@ class VideoBackendBase
 {
 public:
   virtual ~VideoBackendBase() {}
-  virtual unsigned int PeekMessages() = 0;
-
   virtual bool Initialize(void* window_handle) = 0;
   virtual void Shutdown() = 0;
 
@@ -45,9 +43,7 @@ public:
   void ShowConfig(void*);
   virtual void InitBackendInfo() = 0;
 
-  virtual void Video_Prepare() = 0;
   void Video_ExitLoop();
-  virtual void Video_Cleanup() = 0;  // called from gl/d3d thread
 
   void Video_BeginField(u32, u32, u32, u32, u64);
 
@@ -68,7 +64,6 @@ public:
 protected:
   void InitializeShared();
   void ShutdownShared();
-  void CleanupShared();
 
   bool m_initialized = false;
   bool m_invalid = false;

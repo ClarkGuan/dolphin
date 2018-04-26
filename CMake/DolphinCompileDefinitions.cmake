@@ -1,4 +1,4 @@
-# Add a C or C++ compile definitions to the current scope
+# Add C or C++ compile definitions to the current scope
 #
 # dolphin_compile_definitions(def [def ...] [DEBUG_ONLY | RELEASE_ONLY])
 #
@@ -30,5 +30,5 @@ function(dolphin_compile_definitions)
   endif()
 
   set_property(DIRECTORY APPEND PROPERTY COMPILE_DEFINITIONS
-    "$<${genexp_config_test}:${ARGN}>")
+    "$<${genexp_config_test}:${defs}>")
 endfunction()

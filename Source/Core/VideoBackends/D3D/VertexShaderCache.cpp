@@ -7,31 +7,30 @@
 #include "Common/Align.h"
 #include "Common/CommonTypes.h"
 #include "Common/FileUtil.h"
-#include "Common/LinearDiskCache.h"
+#include "Common/MsgHandler.h"
 #include "Common/StringUtil.h"
 
 #include "Core/ConfigManager.h"
+#include "Core/Host.h"
 
 #include "VideoBackends/D3D/D3DShader.h"
+#include "VideoBackends/D3D/D3DState.h"
+#include "VideoBackends/D3D/VertexManager.h"
 #include "VideoBackends/D3D/VertexShaderCache.h"
 
 #include "VideoCommon/Debugger.h"
 #include "VideoCommon/Statistics.h"
+#include "VideoCommon/UberShaderVertex.h"
+#include "VideoCommon/VertexLoaderManager.h"
 #include "VideoCommon/VertexShaderGen.h"
 #include "VideoCommon/VertexShaderManager.h"
 
 namespace DX11
 {
-VertexShaderCache::VSCache VertexShaderCache::vshaders;
-const VertexShaderCache::VSCacheEntry* VertexShaderCache::last_entry;
-VertexShaderUid VertexShaderCache::last_uid;
-
 static ID3D11VertexShader* SimpleVertexShader = nullptr;
 static ID3D11VertexShader* ClearVertexShader = nullptr;
 static ID3D11InputLayout* SimpleLayout = nullptr;
 static ID3D11InputLayout* ClearLayout = nullptr;
-
-LinearDiskCache<VertexShaderUid, u8> g_vs_disk_cache;
 
 ID3D11VertexShader* VertexShaderCache::GetSimpleVertexShader()
 {
@@ -70,10 +69,11 @@ ID3D11Buffer*& VertexShaderCache::GetConstantBuffer()
 }
 
 // this class will load the precompiled shaders into our cache
-class VertexShaderCacheInserter : public LinearDiskCacheReader<VertexShaderUid, u8>
+template <typename UidType>
+class VertexShaderCacheInserter : public LinearDiskCacheReader<UidType, u8>
 {
 public:
-  void Read(const VertexShaderUid& key, const u8* value, u32 value_size)
+  void Read(const UidType& key, const u8* value, u32 value_size)
   {
     D3DBlob* blob = new D3DBlob(value_size, value);
     VertexShaderCache::InsertByteCode(key, blob);
@@ -129,8 +129,7 @@ void VertexShaderCache::Init()
                                                 D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE);
   HRESULT hr = D3D::device->CreateBuffer(&cbdesc, nullptr, &vscbuf);
   CHECK(hr == S_OK, "Create vertex shader constant buffer (size=%u)", cbsize);
-  D3D::SetDebugObjectName((ID3D11DeviceChild*)vscbuf,
-                          "vertex shader constant buffer used to emulate the GX pipeline");
+  D3D::SetDebugObjectName(vscbuf, "vertex shader constant buffer used to emulate the GX pipeline");
 
   D3DBlob* blob;
   D3D::CompileVertexShader(simple_shader_code, &blob);
@@ -140,8 +139,8 @@ void VertexShaderCache::Init()
     PanicAlert("Failed to create simple vertex shader or input layout at %s %d\n", __FILE__,
                __LINE__);
   blob->Release();
-  D3D::SetDebugObjectName((ID3D11DeviceChild*)SimpleVertexShader, "simple vertex shader");
-  D3D::SetDebugObjectName((ID3D11DeviceChild*)SimpleLayout, "simple input layout");
+  D3D::SetDebugObjectName(SimpleVertexShader, "simple vertex shader");
+  D3D::SetDebugObjectName(SimpleLayout, "simple input layout");
 
   D3D::CompileVertexShader(clear_shader_code, &blob);
   D3D::device->CreateInputLayout(clearelems, 2, blob->Data(), blob->Size(), &ClearLayout);
@@ -150,33 +149,11 @@ void VertexShaderCache::Init()
     PanicAlert("Failed to create clear vertex shader or input layout at %s %d\n", __FILE__,
                __LINE__);
   blob->Release();
-  D3D::SetDebugObjectName((ID3D11DeviceChild*)ClearVertexShader, "clear vertex shader");
-  D3D::SetDebugObjectName((ID3D11DeviceChild*)ClearLayout, "clear input layout");
-
-  Clear();
-
-  if (!File::Exists(File::GetUserPath(D_SHADERCACHE_IDX)))
-    File::CreateDir(File::GetUserPath(D_SHADERCACHE_IDX));
+  D3D::SetDebugObjectName(ClearVertexShader, "clear vertex shader");
+  D3D::SetDebugObjectName(ClearLayout, "clear input layout");
 
   SETSTAT(stats.numVertexShadersCreated, 0);
   SETSTAT(stats.numVertexShadersAlive, 0);
-
-  std::string cache_filename =
-      StringFromFormat("%sdx11-%s-vs.cache", File::GetUserPath(D_SHADERCACHE_IDX).c_str(),
-                       SConfig::GetInstance().m_strGameID.c_str());
-  VertexShaderCacheInserter inserter;
-  g_vs_disk_cache.OpenAndRead(cache_filename, inserter);
-
-  last_entry = nullptr;
-}
-
-void VertexShaderCache::Clear()
-{
-  for (auto& iter : vshaders)
-    iter.second.Destroy();
-  vshaders.clear();
-
-  last_entry = nullptr;
 }
 
 void VertexShaderCache::Shutdown()
@@ -188,77 +165,5 @@ void VertexShaderCache::Shutdown()
 
   SAFE_RELEASE(SimpleLayout);
   SAFE_RELEASE(ClearLayout);
-
-  Clear();
-  g_vs_disk_cache.Sync();
-  g_vs_disk_cache.Close();
 }
-
-bool VertexShaderCache::SetShader()
-{
-  VertexShaderUid uid = GetVertexShaderUid();
-
-  if (last_entry)
-  {
-    if (uid == last_uid)
-    {
-      GFX_DEBUGGER_PAUSE_AT(NEXT_VERTEX_SHADER_CHANGE, true);
-      return (last_entry->shader != nullptr);
-    }
-  }
-
-  last_uid = uid;
-
-  VSCache::iterator iter = vshaders.find(uid);
-  if (iter != vshaders.end())
-  {
-    const VSCacheEntry& entry = iter->second;
-    last_entry = &entry;
-
-    GFX_DEBUGGER_PAUSE_AT(NEXT_VERTEX_SHADER_CHANGE, true);
-    return (entry.shader != nullptr);
-  }
-
-  ShaderCode code = GenerateVertexShaderCode(APIType::D3D, uid.GetUidData());
-
-  D3DBlob* pbytecode = nullptr;
-  D3D::CompileVertexShader(code.GetBuffer(), &pbytecode);
-
-  if (pbytecode == nullptr)
-  {
-    GFX_DEBUGGER_PAUSE_AT(NEXT_ERROR, true);
-    return false;
-  }
-  g_vs_disk_cache.Append(uid, pbytecode->Data(), pbytecode->Size());
-
-  bool success = InsertByteCode(uid, pbytecode);
-  pbytecode->Release();
-
-  GFX_DEBUGGER_PAUSE_AT(NEXT_VERTEX_SHADER_CHANGE, true);
-  return success;
-}
-
-bool VertexShaderCache::InsertByteCode(const VertexShaderUid& uid, D3DBlob* bcodeblob)
-{
-  ID3D11VertexShader* shader = D3D::CreateVertexShaderFromByteCode(bcodeblob);
-  if (shader == nullptr)
-    return false;
-
-  // TODO: Somehow make the debug name a bit more specific
-  D3D::SetDebugObjectName((ID3D11DeviceChild*)shader, "a vertex shader of VertexShaderCache");
-
-  // Make an entry in the table
-  VSCacheEntry entry;
-  entry.shader = shader;
-  entry.SetByteCode(bcodeblob);
-
-  vshaders[uid] = entry;
-  last_entry = &vshaders[uid];
-
-  INCSTAT(stats.numVertexShadersCreated);
-  SETSTAT(stats.numVertexShadersAlive, (int)vshaders.size());
-
-  return true;
-}
-
 }  // namespace DX11

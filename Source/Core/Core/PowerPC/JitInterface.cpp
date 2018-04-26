@@ -2,9 +2,13 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include "Core/PowerPC/JitInterface.h"
+
 #include <algorithm>
 #include <cinttypes>
+#include <cstdio>
 #include <string>
+#include <unordered_set>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -12,24 +16,25 @@
 #include "Common/PerformanceCounter.h"
 #endif
 
+#include "Common/ChunkFile.h"
+#include "Common/CommonTypes.h"
+#include "Common/File.h"
+#include "Common/MsgHandler.h"
+
 #include "Core/Core.h"
+#include "Core/PowerPC/CPUCoreBase.h"
 #include "Core/PowerPC/CachedInterpreter/CachedInterpreter.h"
 #include "Core/PowerPC/JitCommon/JitBase.h"
-#include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PPCSymbolDB.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/PowerPC/Profiler.h"
 
 #if _M_X86
 #include "Core/PowerPC/Jit64/Jit.h"
-#include "Core/PowerPC/Jit64/Jit64_Tables.h"
-#include "Core/PowerPC/Jit64IL/JitIL.h"
-#include "Core/PowerPC/Jit64IL/JitIL_Tables.h"
 #endif
 
 #if _M_ARM_64
 #include "Core/PowerPC/JitArm64/Jit.h"
-#include "Core/PowerPC/JitArm64/JitArm64_Tables.h"
 #endif
 
 namespace JitInterface
@@ -41,24 +46,20 @@ void DoState(PointerWrap& p)
 }
 CPUCoreBase* InitJitCore(int core)
 {
-  CPUCoreBase* ptr = nullptr;
   switch (core)
   {
 #if _M_X86
   case PowerPC::CORE_JIT64:
-    ptr = new Jit64();
-    break;
-  case PowerPC::CORE_JITIL64:
-    ptr = new JitIL();
+    g_jit = new Jit64();
     break;
 #endif
 #if _M_ARM_64
   case PowerPC::CORE_JITARM64:
-    ptr = new JitArm64();
+    g_jit = new JitArm64();
     break;
 #endif
   case PowerPC::CORE_CACHEDINTERPRETER:
-    ptr = new CachedInterpreter();
+    g_jit = new CachedInterpreter();
     break;
 
   default:
@@ -66,35 +67,10 @@ CPUCoreBase* InitJitCore(int core)
     g_jit = nullptr;
     return nullptr;
   }
-  g_jit = static_cast<JitBase*>(ptr);
   g_jit->Init();
-  return ptr;
+  return g_jit;
 }
-void InitTables(int core)
-{
-  switch (core)
-  {
-#if _M_X86
-  case PowerPC::CORE_JIT64:
-    Jit64Tables::InitTables();
-    break;
-  case PowerPC::CORE_JITIL64:
-    JitILTables::InitTables();
-    break;
-#endif
-#if _M_ARM_64
-  case PowerPC::CORE_JITARM64:
-    JitArm64Tables::InitTables();
-    break;
-#endif
-  case PowerPC::CORE_CACHEDINTERPRETER:
-    // has no tables
-    break;
-  default:
-    PanicAlert("Unrecognizable cpu_core: %d", core);
-    break;
-  }
-}
+
 CPUCoreBase* GetCore()
 {
   return g_jit;
@@ -102,7 +78,7 @@ CPUCoreBase* GetCore()
 
 void WriteProfileResults(const std::string& filename)
 {
-  ProfileStats prof_stats;
+  Profiler::ProfileStats prof_stats;
   GetProfileResults(&prof_stats);
 
   File::IOFile f(filename, "w");
@@ -125,7 +101,7 @@ void WriteProfileResults(const std::string& filename)
   }
 }
 
-void GetProfileResults(ProfileStats* prof_stats)
+void GetProfileResults(Profiler::ProfileStats* prof_stats)
 {
   // Can't really do this with no g_jit core available
   if (!g_jit)
@@ -141,12 +117,12 @@ void GetProfileResults(ProfileStats* prof_stats)
 
   QueryPerformanceFrequency((LARGE_INTEGER*)&prof_stats->countsPerSec);
   g_jit->GetBlockCache()->RunOnBlocks([&prof_stats](const JitBlock& block) {
-    // Rough heuristic.  Mem instructions should cost more.
-    u64 cost = block.originalSize * (block.runCount / 4);
-    u64 timecost = block.ticCounter;
+    const auto& data = block.profile_data;
+    u64 cost = data.downcountCounter;
+    u64 timecost = data.ticCounter;
     // Todo: tweak.
-    if (block.runCount >= 1)
-      prof_stats->block_stats.emplace_back(block.effectiveAddress, cost, timecost, block.runCount,
+    if (data.runCount >= 1)
+      prof_stats->block_stats.emplace_back(block.effectiveAddress, cost, timecost, data.runCount,
                                            block.codeSize);
     prof_stats->cost_sum += cost;
     prof_stats->timecost_sum += timecost;
@@ -247,24 +223,24 @@ void CompileExceptionCheck(ExceptionType type)
 
   switch (type)
   {
-  case ExceptionType::EXCEPTIONS_FIFO_WRITE:
+  case ExceptionType::FIFOWrite:
     exception_addresses = &g_jit->js.fifoWriteAddresses;
     break;
-  case ExceptionType::EXCEPTIONS_PAIRED_QUANTIZE:
+  case ExceptionType::PairedQuantize:
     exception_addresses = &g_jit->js.pairedQuantizeAddresses;
     break;
-  case ExceptionType::EXCEPTIONS_SPECULATIVE_CONSTANTS:
+  case ExceptionType::SpeculativeConstants:
     exception_addresses = &g_jit->js.noSpeculativeConstantsAddresses;
     break;
   }
 
   if (PC != 0 && (exception_addresses->find(PC)) == (exception_addresses->end()))
   {
-    if (type == ExceptionType::EXCEPTIONS_FIFO_WRITE)
+    if (type == ExceptionType::FIFOWrite)
     {
       // Check in case the code has been replaced since: do we need to do this?
-      int optype = GetOpInfo(PowerPC::HostRead_U32(PC))->type;
-      if (optype != OPTYPE_STORE && optype != OPTYPE_STOREFP && (optype != OPTYPE_STOREPS))
+      const OpType optype = PPCTables::GetOpInfo(PowerPC::HostRead_U32(PC))->type;
+      if (optype != OpType::Store && optype != OpType::StoreFP && optype != OpType::StorePS)
         return;
     }
     exception_addresses->insert(PC);

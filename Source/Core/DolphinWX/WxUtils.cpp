@@ -28,6 +28,8 @@
 
 #include "DolphinWX/WxUtils.h"
 
+#include "UICommon/GameFile.h"
+
 #ifdef _WIN32
 #include <Windows.h>
 #endif
@@ -285,6 +287,27 @@ wxSize GetTextWidgetMinSize(const wxSpinCtrl* spinner)
   return size;
 }
 
+wxImage ToWxImage(const UICommon::GameBanner& banner)
+{
+  return ToWxImage(banner.buffer, banner.width, banner.height);
+}
+
+wxImage ToWxImage(const std::vector<u32>& buffer, int width, int height)
+{
+  wxImage image(width, height, false);
+  if (buffer.empty())
+    return image;
+
+  unsigned char* data = image.GetData();
+  for (int i = 0; i < width * height; i++)
+  {
+    data[i * 3 + 0] = (buffer[i] & 0xFF0000) >> 16;
+    data[i * 3 + 1] = (buffer[i] & 0x00FF00) >> 8;
+    data[i * 3 + 2] = (buffer[i] & 0x0000FF) >> 0;
+  }
+  return image;
+}
+
 static wxImage LoadScaledImage(const std::string& file_path, const wxWindow* context,
                                const wxSize& output_size, const wxRect& usable_rect, LSIFlags flags,
                                const wxColour& fill_color)
@@ -530,4 +553,11 @@ wxString StrToWxStr(const std::string& str)
 {
   // return wxString::FromUTF8Unchecked(str.c_str());
   return wxString::FromUTF8(str.c_str());
+}
+
+unsigned long WxStrToUL(const wxString& str)
+{
+  unsigned long value = 0;
+  str.ToULong(&value);
+  return value;
 }

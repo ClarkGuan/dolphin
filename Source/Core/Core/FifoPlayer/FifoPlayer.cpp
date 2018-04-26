@@ -2,15 +2,16 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include "Core/FifoPlayer/FifoPlayer.h"
+
 #include <algorithm>
 #include <mutex>
-
-#include "Core/FifoPlayer/FifoPlayer.h"
 
 #include "Common/Assert.h"
 #include "Common/CommonTypes.h"
 #include "Common/MsgHandler.h"
 #include "Core/ConfigManager.h"
+#include "Core/Core.h"
 #include "Core/CoreTiming.h"
 #include "Core/FifoPlayer/FifoAnalyzer.h"
 #include "Core/FifoPlayer/FifoDataFile.h"
@@ -30,6 +31,10 @@
 #include "VideoCommon/TextureDecoder.h"
 
 bool IsPlayingBackFifologWithBrokenEFBCopies = false;
+
+FifoPlayer::FifoPlayer() : m_Loop{SConfig::GetInstance().bLoopFifoReplay}
+{
+}
 
 FifoPlayer::~FifoPlayer()
 {
@@ -63,6 +68,11 @@ void FifoPlayer::Close()
   m_FrameRangeEnd = 0;
 }
 
+bool FifoPlayer::IsPlaying() const
+{
+  return GetFile() != nullptr && Core::IsRunning();
+}
+
 class FifoPlayer::CPUCore final : public CPUCoreBase
 {
 public:
@@ -92,21 +102,24 @@ public:
     PanicAlertT("Cannot SingleStep the FIFO. Use Frame Advance instead.");
   }
 
-  const char* GetName() override { return "FifoPlayer"; }
+  const char* GetName() const override { return "FifoPlayer"; }
   void Run() override
   {
-    while (CPU::GetState() == CPU::CPU_RUNNING)
+    while (CPU::GetState() == CPU::State::Running)
     {
       switch (m_parent->AdvanceFrame())
       {
-      case CPU::CPU_POWERDOWN:
+      case CPU::State::PowerDown:
         CPU::Break();
         Host_Message(WM_USER_STOP);
         break;
 
-      case CPU::CPU_STEPPING:
+      case CPU::State::Stepping:
         CPU::Break();
         Host_UpdateMainFrame();
+        break;
+
+      case CPU::State::Running:
         break;
       }
     }
@@ -116,15 +129,15 @@ private:
   FifoPlayer* m_parent;
 };
 
-int FifoPlayer::AdvanceFrame()
+CPU::State FifoPlayer::AdvanceFrame()
 {
   if (m_CurrentFrame >= m_FrameRangeEnd)
   {
     if (!m_Loop)
-      return CPU::CPU_POWERDOWN;
+      return CPU::State::PowerDown;
     // If there are zero frames in the range then sleep instead of busy spinning
     if (m_FrameRangeStart >= m_FrameRangeEnd)
-      return CPU::CPU_STEPPING;
+      return CPU::State::Stepping;
 
     // When looping, reload the contents of all the BP/CP/CF registers.
     // This ensures that each time the first frame is played back, the state of the
@@ -144,7 +157,7 @@ int FifoPlayer::AdvanceFrame()
   WriteFrame(m_File->GetFrame(m_CurrentFrame), m_FrameInfo[m_CurrentFrame]);
 
   ++m_CurrentFrame;
-  return CPU::CPU_RUNNING;
+  return CPU::State::Running;
 }
 
 std::unique_ptr<CPUCoreBase> FifoPlayer::GetCPUCore()
@@ -153,6 +166,16 @@ std::unique_ptr<CPUCoreBase> FifoPlayer::GetCPUCore()
     return nullptr;
 
   return std::make_unique<CPUCore>(this);
+}
+
+bool FifoPlayer::IsRunningWithFakeVideoInterfaceUpdates() const
+{
+  if (!m_File || m_File->GetFrameCount() == 0)
+  {
+    return false;
+  }
+
+  return m_File->ShouldGenerateFakeVIUpdates();
 }
 
 u32 FifoPlayer::GetFrameObjectCount() const
@@ -203,14 +226,6 @@ FifoPlayer& FifoPlayer::GetInstance()
 {
   static FifoPlayer instance;
   return instance;
-}
-
-FifoPlayer::FifoPlayer()
-    : m_CurrentFrame(0), m_FrameRangeStart(0), m_FrameRangeEnd(0), m_ObjectRangeStart(0),
-      m_ObjectRangeEnd(10000), m_EarlyMemoryUpdates(false), m_FileLoadedCb(nullptr),
-      m_FrameWrittenCb(nullptr), m_File(nullptr)
-{
-  m_Loop = SConfig::GetInstance().bLoopFifoReplay;
 }
 
 void FifoPlayer::WriteFrame(const FifoFrameInfo& frame, const AnalyzedFrameInfo& info)
@@ -313,7 +328,7 @@ void FifoPlayer::WriteFramePart(u32 dataStart, u32 dataEnd, u32& nextMemUpdate,
 
 void FifoPlayer::WriteAllMemoryUpdates()
 {
-  _assert_(m_File);
+  ASSERT(m_File);
 
   for (u32 frameNum = 0; frameNum < m_File->GetFrameCount(); ++frameNum)
   {

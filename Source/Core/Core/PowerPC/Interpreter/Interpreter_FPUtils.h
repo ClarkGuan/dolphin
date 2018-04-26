@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cmath>
+#include <cstring>
 #include <limits>
 
 #include "Common/CPUDetect.h"
@@ -13,8 +14,7 @@
 #include "Core/PowerPC/Gekko.h"
 #include "Core/PowerPC/PowerPC.h"
 
-const u64 PPC_NAN_U64 = 0x7ff8000000000000ull;
-const double PPC_NAN = *(double* const) & PPC_NAN_U64;
+constexpr double PPC_NAN = std::numeric_limits<double>::quiet_NaN();
 
 // the 4 less-significand bits in FPSCR[FPRF]
 enum FPCC
@@ -72,16 +72,28 @@ inline double ForceDouble(double d)
 
 inline double Force25Bit(double d)
 {
-  MathUtil::IntDouble x(d);
-  x.i = (x.i & 0xFFFFFFFFF8000000ULL) + (x.i & 0x8000000);
-  return x.d;
+  u64 integral;
+  std::memcpy(&integral, &d, sizeof(u64));
+
+  integral = (integral & 0xFFFFFFFFF8000000ULL) + (integral & 0x8000000);
+
+  double result;
+  std::memcpy(&result, &integral, sizeof(double));
+
+  return result;
 }
 
 inline double MakeQuiet(double d)
 {
-  MathUtil::IntDouble x(d);
-  x.i |= MathUtil::DOUBLE_QBIT;
-  return x.d;
+  u64 integral;
+  std::memcpy(&integral, &d, sizeof(u64));
+
+  integral |= MathUtil::DOUBLE_QBIT;
+
+  double result;
+  std::memcpy(&result, &integral, sizeof(double));
+
+  return result;
 }
 
 // these functions allow globally modify operations behaviour

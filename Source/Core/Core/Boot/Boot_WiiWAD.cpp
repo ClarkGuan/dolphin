@@ -3,115 +3,35 @@
 // Refer to the license.txt file included.
 
 #include <memory>
-#include <string>
 
-#include "Common/CommonPaths.h"
 #include "Common/CommonTypes.h"
-#include "Common/FileUtil.h"
-#include "Common/NandPaths.h"
+#include "Common/MsgHandler.h"
 
 #include "Core/Boot/Boot.h"
-#include "Core/Boot/Boot_DOL.h"
-#include "Core/IOS/FS/FileIO.h"
-#include "Core/IOS/IPC.h"
-#include "Core/PatchEngine.h"
-#include "Core/PowerPC/PowerPC.h"
+#include "Core/CommonTitles.h"
+#include "Core/IOS/ES/ES.h"
+#include "Core/IOS/ES/Formats.h"
+#include "Core/IOS/IOS.h"
+#include "Core/WiiUtils.h"
+#include "DiscIO/WiiWad.h"
 
-#include "DiscIO/NANDContentLoader.h"
-#include "DiscIO/Volume.h"
-#include "DiscIO/VolumeCreator.h"
-
-static u32 state_checksum(u32* buf, int len)
+bool CBoot::BootNANDTitle(const u64 title_id)
 {
-  u32 checksum = 0;
-  len = len >> 2;
+  UpdateStateFlags([](StateFlags* state) {
+    state->type = 0x04;  // TYPE_NANDBOOT
+  });
 
-  for (int i = 0; i < len; i++)
-  {
-    checksum += buf[i];
-  }
-
-  return checksum;
+  auto* ios = IOS::HLE::GetIOS();
+  SetupWiiMemory();
+  return ios->GetES()->LaunchTitle(title_id);
 }
 
-struct StateFlags
+bool CBoot::Boot_WiiWAD(const DiscIO::WiiWAD& wad)
 {
-  u32 checksum;
-  u8 flags;
-  u8 type;
-  u8 discstate;
-  u8 returnto;
-  u32 unknown[6];
-};
-
-bool CBoot::Boot_WiiWAD(const std::string& _pFilename)
-{
-  std::string state_filename(Common::GetTitleDataPath(TITLEID_SYSMENU, Common::FROM_SESSION_ROOT) +
-                             WII_STATE);
-
-  if (File::Exists(state_filename))
+  if (!WiiUtils::InstallWAD(*IOS::HLE::GetIOS(), wad, WiiUtils::InstallType::Temporary))
   {
-    File::IOFile state_file(state_filename, "r+b");
-    StateFlags state;
-    state_file.ReadBytes(&state, sizeof(StateFlags));
-
-    state.type = 0x03;  // TYPE_RETURN
-    state.checksum = state_checksum((u32*)&state.flags, sizeof(StateFlags) - 4);
-
-    state_file.Seek(0, SEEK_SET);
-    state_file.WriteBytes(&state, sizeof(StateFlags));
+    PanicAlertT("Cannot boot this WAD because it could not be installed to the NAND.");
+    return false;
   }
-  else
-  {
-    File::CreateFullPath(state_filename);
-    File::IOFile state_file(state_filename, "a+b");
-    StateFlags state;
-    memset(&state, 0, sizeof(StateFlags));
-    state.type = 0x03;       // TYPE_RETURN
-    state.discstate = 0x01;  // DISCSTATE_WII
-    state.checksum = state_checksum((u32*)&state.flags, sizeof(StateFlags) - 4);
-    state_file.WriteBytes(&state, sizeof(StateFlags));
-  }
-
-  const DiscIO::CNANDContentLoader& ContentLoader =
-      DiscIO::CNANDContentManager::Access().GetNANDLoader(_pFilename);
-  if (!ContentLoader.IsValid())
-    return false;
-
-  u64 titleID = ContentLoader.GetTitleID();
-  // create data directory
-  File::CreateFullPath(Common::GetTitleDataPath(titleID, Common::FROM_SESSION_ROOT));
-
-  if (titleID == TITLEID_SYSMENU)
-    IOS::HLE::HLE_IPC_CreateVirtualFATFilesystem();
-  // setup Wii memory
-
-  u64 ios_title_id = 0x0000000100000000ULL | ContentLoader.GetIosVersion();
-  if (!SetupWiiMemory(ios_title_id))
-    return false;
-  // DOL
-  const DiscIO::SNANDContent* pContent =
-      ContentLoader.GetContentByIndex(ContentLoader.GetBootIndex());
-  if (pContent == nullptr)
-    return false;
-
-  IOS::HLE::SetDefaultContentFile(_pFilename);
-
-  std::unique_ptr<CDolLoader> pDolLoader = std::make_unique<CDolLoader>(pContent->m_Data->Get());
-  if (!pDolLoader->IsValid())
-    return false;
-
-  pDolLoader->Load();
-  // NAND titles start with address translation off at 0x3400 (via the PPC bootstub)
-  // The state of other CPU registers (like the BAT registers) doesn't matter much
-  // because the realmode code at 0x3400 initializes everything itself anyway.
-  MSR = 0;
-  PC = 0x3400;
-
-  // Load patches and run startup patches
-  const std::unique_ptr<DiscIO::IVolume> pVolume(DiscIO::CreateVolumeFromFilename(_pFilename));
-  if (pVolume != nullptr)
-    PatchEngine::LoadPatches();
-
-  return true;
+  return BootNANDTitle(wad.GetTMD().GetTitleId());
 }

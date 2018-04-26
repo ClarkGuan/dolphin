@@ -7,6 +7,8 @@
 #include <QEvent>
 #include <QWidget>
 
+class QTimer;
+
 class RenderWidget final : public QWidget
 {
   Q_OBJECT
@@ -14,12 +16,22 @@ class RenderWidget final : public QWidget
 public:
   explicit RenderWidget(QWidget* parent = nullptr);
 
-  bool event(QEvent* event);
+  bool event(QEvent* event) override;
+  void showFullScreen();
 
 signals:
   void EscapePressed();
   void Closed();
   void HandleChanged(void* handle);
-  void FocusChanged(bool focus);
   void StateChanged(bool fullscreen);
+  void SizeChanged(int new_width, int new_height);
+
+private:
+  void HandleCursorTimer();
+  void OnHideCursorChanged();
+  void OnKeepOnTopChanged(bool top);
+  void SetFillBackground(bool fill);
+
+  static constexpr int MOUSE_HIDE_DELAY = 3000;
+  QTimer* m_mouse_timer;
 };

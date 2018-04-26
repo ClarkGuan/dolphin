@@ -45,22 +45,27 @@ std::string StripQuotes(const std::string& s);
 template <typename I>
 std::string ThousandSeparate(I value, int spaces = 0)
 {
-  std::ostringstream oss;
-
-// std::locale("") seems to be broken on many platforms
-#if defined _WIN32 || (defined __linux__ && !defined __clang__)
-  oss.imbue(std::locale(""));
+#ifdef _WIN32
+  std::wostringstream stream;
+#else
+  std::ostringstream stream;
 #endif
-  oss << std::setw(spaces) << value;
 
-  return oss.str();
+  stream << std::setw(spaces) << value;
+
+#ifdef _WIN32
+  return UTF16ToUTF8(stream.str());
+#else
+  return stream.str();
+#endif
 }
 
-std::string StringFromInt(int value);
 std::string StringFromBool(bool value);
 
 bool TryParse(const std::string& str, bool* output);
+bool TryParse(const std::string& str, u16* output);
 bool TryParse(const std::string& str, u32* output);
+bool TryParse(const std::string& str, u64* output);
 
 template <typename N>
 static bool TryParse(const std::string& str, N* const output)
@@ -105,7 +110,7 @@ bool AsciiToHex(const std::string& _szValue, u32& result);
 
 std::string TabsToSpaces(int tab_size, const std::string& in);
 
-void SplitString(const std::string& str, char delim, std::vector<std::string>& output);
+std::vector<std::string> SplitString(const std::string& str, char delim);
 std::string JoinStrings(const std::vector<std::string>& strings, const std::string& delimiter);
 
 // "C:/Windows/winhelp.exe" to "C:/Windows/", "winhelp", ".exe"
@@ -118,10 +123,13 @@ std::string ReplaceAll(std::string result, const std::string& src, const std::st
 
 bool StringBeginsWith(const std::string& str, const std::string& begin);
 bool StringEndsWith(const std::string& str, const std::string& end);
+void StringPopBackIf(std::string* s, char c);
 
 std::string CP1252ToUTF8(const std::string& str);
 std::string SHIFTJISToUTF8(const std::string& str);
+std::string UTF8ToSHIFTJIS(const std::string& str);
 std::string UTF16ToUTF8(const std::wstring& str);
+std::string UTF16BEToUTF8(const char16_t* str, size_t max_size);  // Stops at \0
 
 #ifdef _WIN32
 

@@ -17,7 +17,7 @@
 #include "Common/CommonTypes.h"
 #include "Common/Flag.h"
 #include "Core/IOS/Device.h"
-#include "Core/IOS/IPC.h"
+#include "Core/IOS/IOS.h"
 #include "Core/IOS/USB/Common.h"
 
 class PointerWrap;
@@ -33,10 +33,10 @@ namespace Device
 class USBHost : public Device
 {
 public:
-  USBHost(u32 device_id, const std::string& device_name);
-  virtual ~USBHost() = default;
+  USBHost(Kernel& ios, const std::string& device_name);
+  virtual ~USBHost();
 
-  ReturnCode Open(const OpenRequest& request) override;
+  IPCCommandResult Open(const OpenRequest& request) override;
 
   void UpdateWantDeterminism(bool new_want_determinism) override;
   void DoState(PointerWrap& p) override;
@@ -71,6 +71,8 @@ private:
   void DispatchHooks(const DeviceChangeHooks& hooks);
 
 #ifdef __LIBUSB__
+  libusb_context* m_libusb_context = nullptr;
+
   // Event thread for libusb
   Common::Flag m_event_thread_running;
   std::thread m_event_thread;

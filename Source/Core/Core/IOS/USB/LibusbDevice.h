@@ -36,6 +36,7 @@ public:
   ~LibusbConfigDescriptor();
   libusb_config_descriptor* Get() const { return m_descriptor; }
   bool IsValid() const { return m_descriptor != nullptr; }
+
 private:
   libusb_config_descriptor* m_descriptor = nullptr;
 };
@@ -43,7 +44,8 @@ private:
 class LibusbDevice final : public Device
 {
 public:
-  LibusbDevice(libusb_device* device, const libusb_device_descriptor& device_descriptor);
+  LibusbDevice(Kernel& ios, libusb_device* device,
+               const libusb_device_descriptor& device_descriptor);
   ~LibusbDevice();
   DeviceDescriptor GetDeviceDescriptor() const override;
   std::vector<ConfigDescriptor> GetConfigurations() const override;
@@ -61,6 +63,8 @@ public:
   int SubmitTransfer(std::unique_ptr<IsoMessage> message) override;
 
 private:
+  Kernel& m_ios;
+
   std::vector<std::unique_ptr<LibusbConfigDescriptor>> m_config_descriptors;
   u16 m_vid = 0;
   u16 m_pid = 0;

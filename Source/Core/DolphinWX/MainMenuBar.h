@@ -42,11 +42,19 @@ private:
   wxMenu* CreateHelpMenu() const;
 
   void OnPopulatePerspectivesMenu(PopulatePerspectivesEvent&);
+  void OnUpdateWiiMenuTool(wxCommandEvent&);
 
   void RefreshMenuLabels() const;
   void RefreshPlayMenuLabel() const;
   void RefreshSaveStateMenuLabels() const;
+  void RefreshWiiToolsLabels() const;
   void RefreshWiiSystemMenuLabel() const;
+  enum class UpdateMenuMode
+  {
+    CurrentRegionOnly,
+    SpecificRegionsOnly,
+  };
+  void EnableUpdateMenu(UpdateMenuMode mode) const;
 
   void ClearSavedPerspectivesMenu() const;
   void PopulateSavedPerspectivesMenu(const std::vector<std::string>& label_names) const;
@@ -69,6 +77,7 @@ public:
   const std::vector<std::string>& PerspectiveNames() const { return m_perspective_names; }
   int ActivePerspective() const { return m_active_perspective; }
   wxEvent* Clone() const override { return new PopulatePerspectivesEvent(*this); }
+
 private:
   std::vector<std::string> m_perspective_names;
   int m_active_perspective{};

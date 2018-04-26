@@ -2,6 +2,11 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include "Core/PowerPC/PowerPC.h"
+
+#include <cstring>
+#include <vector>
+
 #include "Common/Assert.h"
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
@@ -18,8 +23,6 @@
 #include "Core/PowerPC/CPUCoreBase.h"
 #include "Core/PowerPC/Interpreter/Interpreter.h"
 #include "Core/PowerPC/JitInterface.h"
-#include "Core/PowerPC/PPCTables.h"
-#include "Core/PowerPC/PowerPC.h"
 
 namespace PowerPC
 {
@@ -148,8 +151,6 @@ static void ResetRegisters()
 
 static void InitializeCPUCore(int cpu_core)
 {
-  PPCTables::InitTables(cpu_core);
-
   // We initialize the interpreter because
   // it is used on boot and code window independently.
   s_interpreter->Init();
@@ -178,6 +179,32 @@ static void InitializeCPUCore(int cpu_core)
   {
     s_mode = CoreMode::Interpreter;
   }
+}
+
+const std::vector<CPUCore>& AvailableCPUCores()
+{
+  static const std::vector<CPUCore> cpu_cores = {
+      CORE_INTERPRETER,
+      CORE_CACHEDINTERPRETER,
+#ifdef _M_X86_64
+      CORE_JIT64,
+#elif defined(_M_ARM_64)
+      CORE_JITARM64,
+#endif
+  };
+
+  return cpu_cores;
+}
+
+CPUCore DefaultCPUCore()
+{
+#ifdef _M_X86_64
+  return CORE_JIT64;
+#elif defined(_M_ARM_64)
+  return CORE_JITARM64;
+#else
+  return CORE_CACHEDINTERPRETER;
+#endif
 }
 
 void Init(int cpu_core)
@@ -210,11 +237,15 @@ void Reset()
 
 void ScheduleInvalidateCacheThreadSafe(u32 address)
 {
-  if (CPU::GetState() == CPU::State::CPU_RUNNING)
+  if (CPU::GetState() == CPU::State::Running)
+  {
     CoreTiming::ScheduleEvent(0, s_invalidate_cache_thread_safe, address,
                               CoreTiming::FromThread::NON_CPU);
+  }
   else
+  {
     PowerPC::ppcState.iCache.Invalidate(static_cast<u32>(address));
+  }
 }
 
 void Shutdown()
@@ -444,8 +475,6 @@ void CheckExceptions()
   }
   else if (exceptions & EXCEPTION_ALIGNMENT)
   {
-    // This never happens ATM
-    // perhaps we can get dcb* instructions to use this :p
     SRR0 = PC;
     SRR1 = MSR & 0x87C0FFFF;
     MSR |= (MSR >> 16) & 1;
@@ -484,7 +513,7 @@ void CheckExternalExceptions()
       DEBUG_LOG(POWERPC, "EXCEPTION_EXTERNAL_INT");
       ppcState.Exceptions &= ~EXCEPTION_EXTERNAL_INT;
 
-      _dbg_assert_msg_(POWERPC, (SRR1 & 0x02) != 0, "EXTERNAL_INT unrecoverable???");
+      DEBUG_ASSERT_MSG(POWERPC, (SRR1 & 0x02) != 0, "EXTERNAL_INT unrecoverable???");
     }
     else if (exceptions & EXCEPTION_PERFORMANCE_MONITOR)
     {
@@ -510,7 +539,7 @@ void CheckExternalExceptions()
     }
     else
     {
-      _dbg_assert_msg_(POWERPC, 0, "Unknown EXT interrupt: Exceptions == %08x", exceptions);
+      DEBUG_ASSERT_MSG(POWERPC, 0, "Unknown EXT interrupt: Exceptions == %08x", exceptions);
       ERROR_LOG(POWERPC, "Unknown EXTERNAL INTERRUPT exception: Exceptions == %08x", exceptions);
     }
   }
@@ -526,13 +555,11 @@ void CheckBreakPoints()
   }
 }
 
-}  // namespace
-
 // FPSCR update functions
 
 void UpdateFPRF(double dvalue)
 {
   FPSCR.FPRF = MathUtil::ClassifyDouble(dvalue);
-  // if (FPSCR.FPRF == 0x11)
-  //	PanicAlert("QNAN alert");
 }
+
+}  // namespace PowerPC

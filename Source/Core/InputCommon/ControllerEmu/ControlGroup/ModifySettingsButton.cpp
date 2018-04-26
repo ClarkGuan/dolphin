@@ -13,6 +13,8 @@
 #include "InputCommon/ControlReference/ControlReference.h"
 #include "InputCommon/ControllerEmu/Control/Control.h"
 #include "InputCommon/ControllerEmu/Control/Input.h"
+#include "InputCommon/ControllerEmu/Setting/BooleanSetting.h"
+#include "InputCommon/ControllerEmu/Setting/NumericSetting.h"
 #include "VideoCommon/OnScreenDisplay.h"
 
 namespace ControllerEmu
@@ -25,7 +27,7 @@ ModifySettingsButton::ModifySettingsButton(std::string button_name)
 
 void ModifySettingsButton::AddInput(std::string button_name, bool toggle)
 {
-  controls.emplace_back(new Input(std::move(button_name)));
+  controls.emplace_back(std::make_unique<Input>(Translate, std::move(button_name)));
   threshold_exceeded.emplace_back(false);
   associated_settings.emplace_back(false);
   associated_settings_toggle.emplace_back(toggle);
@@ -52,9 +54,9 @@ void ModifySettingsButton::GetState()
         associated_settings[i] = !associated_settings[i];
 
         if (associated_settings[i])
-          OSD::AddMessage(controls[i]->name + ": " + _trans("on"));
+          OSD::AddMessage(controls[i]->ui_name + ": on");
         else
-          OSD::AddMessage(controls[i]->name + ": " + _trans("off"));
+          OSD::AddMessage(controls[i]->ui_name + ": off");
 
         threshold_exceeded[i] = true;
       }

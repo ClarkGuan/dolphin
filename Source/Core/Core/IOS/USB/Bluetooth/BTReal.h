@@ -16,8 +16,9 @@
 #include "Common/CommonTypes.h"
 #include "Common/Flag.h"
 #include "Common/Timer.h"
-#include "Core/IOS/IPC.h"
+#include "Core/IOS/IOS.h"
 #include "Core/IOS/USB/Bluetooth/BTBase.h"
+#include "Core/IOS/USB/Bluetooth/hci.h"
 #include "Core/IOS/USB/USBV0.h"
 
 class PointerWrap;
@@ -40,7 +41,6 @@ enum class SyncButtonState
   Ignored,
 };
 
-using btaddr_t = std::array<u8, 6>;
 using linkkey_t = std::array<u8, 16>;
 
 namespace Device
@@ -48,11 +48,11 @@ namespace Device
 class BluetoothReal final : public BluetoothBase
 {
 public:
-  BluetoothReal(u32 device_id, const std::string& device_name);
+  BluetoothReal(Kernel& ios, const std::string& device_name);
   ~BluetoothReal() override;
 
-  ReturnCode Open(const OpenRequest& request) override;
-  void Close() override;
+  IPCCommandResult Open(const OpenRequest& request) override;
+  IPCCommandResult Close(u32 fd) override;
   IPCCommandResult IOCtlV(const IOCtlVRequest& request) override;
 
   void DoState(PointerWrap& p) override;
@@ -76,7 +76,7 @@ private:
 
   libusb_device* m_device = nullptr;
   libusb_device_handle* m_handle = nullptr;
-  std::shared_ptr<libusb_context> m_libusb_context;
+  libusb_context* m_libusb_context = nullptr;
 
   Common::Flag m_thread_running;
   std::thread m_thread;
@@ -101,7 +101,7 @@ private:
   // This stores the address of paired devices and associated link keys.
   // It is needed because some adapters forget all stored link keys when they are reset,
   // which breaks pairings because the Wii relies on the Bluetooth module to remember them.
-  std::map<btaddr_t, linkkey_t> m_link_keys;
+  std::map<bdaddr_t, linkkey_t> m_link_keys;
   Common::Flag m_need_reset_keys;
 
   // This flag is set when a libusb transfer failed (for reasons other than timing out)

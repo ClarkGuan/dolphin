@@ -2,19 +2,23 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include "Core/IOS/USB/USB_HID/HIDv4.h"
+
 #include <cstring>
+#include <mutex>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "Common/Align.h"
 #include "Common/ChunkFile.h"
-#include "Common/CommonFuncs.h"
 #include "Common/Logging/Log.h"
+#include "Common/Swap.h"
 #include "Core/CoreTiming.h"
 #include "Core/HW/Memmap.h"
 #include "Core/IOS/Device.h"
 #include "Core/IOS/USB/Common.h"
 #include "Core/IOS/USB/USBV4.h"
-#include "Core/IOS/USB/USB_HID/HIDv4.h"
 
 namespace IOS
 {
@@ -22,8 +26,7 @@ namespace HLE
 {
 namespace Device
 {
-USB_HIDv4::USB_HIDv4(u32 device_id, const std::string& device_name)
-    : USBHost(device_id, device_name)
+USB_HIDv4::USB_HIDv4(Kernel& ios, const std::string& device_name) : USBHost(ios, device_name)
 {
 }
 
@@ -101,7 +104,7 @@ IPCCommandResult USB_HIDv4::Shutdown(const IOCtlRequest& request)
   if (m_devicechange_hook_request != 0)
   {
     Memory::Write_U32(0xffffffff, m_devicechange_hook_request->buffer_out);
-    EnqueueReply(*m_devicechange_hook_request, -1);
+    m_ios.EnqueueIPCReply(*m_devicechange_hook_request, -1);
     m_devicechange_hook_request.reset();
   }
   return GetDefaultReply(IPC_SUCCESS);
@@ -112,12 +115,12 @@ s32 USB_HIDv4::SubmitTransfer(USB::Device& device, const IOCtlRequest& request)
   switch (request.request)
   {
   case USB::IOCTL_USBV4_CTRLMSG:
-    return device.SubmitTransfer(std::make_unique<USB::V4CtrlMessage>(request));
+    return device.SubmitTransfer(std::make_unique<USB::V4CtrlMessage>(m_ios, request));
   case USB::IOCTL_USBV4_GET_US_STRING:
-    return device.SubmitTransfer(std::make_unique<USB::V4GetUSStringMessage>(request));
+    return device.SubmitTransfer(std::make_unique<USB::V4GetUSStringMessage>(m_ios, request));
   case USB::IOCTL_USBV4_INTRMSG_IN:
   case USB::IOCTL_USBV4_INTRMSG_OUT:
-    return device.SubmitTransfer(std::make_unique<USB::V4IntrMessage>(request));
+    return device.SubmitTransfer(std::make_unique<USB::V4IntrMessage>(m_ios, request));
   default:
     return IPC_EINVAL;
   }
@@ -203,8 +206,42 @@ void USB_HIDv4::TriggerDeviceChangeReply()
     Memory::Write_U32(0xffffffff, dest + offset);
   }
 
-  EnqueueReply(*m_devicechange_hook_request, IPC_SUCCESS, 0, CoreTiming::FromThread::ANY);
+  m_ios.EnqueueIPCReply(*m_devicechange_hook_request, IPC_SUCCESS, 0, CoreTiming::FromThread::ANY);
   m_devicechange_hook_request.reset();
+}
+
+template <typename T>
+static void CopyDescriptorToBuffer(std::vector<u8>* buffer, T descriptor)
+{
+  const size_t size = sizeof(descriptor);
+  descriptor.Swap();
+  buffer->insert(buffer->end(), reinterpret_cast<const u8*>(&descriptor),
+                 reinterpret_cast<const u8*>(&descriptor) + size);
+  const size_t number_of_padding_bytes = Common::AlignUp(size, 4) - size;
+  buffer->insert(buffer->end(), number_of_padding_bytes, 0);
+}
+
+static std::vector<u8> GetDescriptors(const USB::Device& device)
+{
+  std::vector<u8> buffer;
+
+  CopyDescriptorToBuffer(&buffer, device.GetDeviceDescriptor());
+  const auto configurations = device.GetConfigurations();
+  for (size_t c = 0; c < configurations.size(); ++c)
+  {
+    CopyDescriptorToBuffer(&buffer, configurations[c]);
+    const auto interfaces = device.GetInterfaces(static_cast<u8>(c));
+    for (size_t i = interfaces.size(); i-- > 0;)
+    {
+      CopyDescriptorToBuffer(&buffer, interfaces[i]);
+      for (const auto& endpoint_descriptor : device.GetEndpoints(
+               static_cast<u8>(c), interfaces[i].bInterfaceNumber, interfaces[i].bAlternateSetting))
+      {
+        CopyDescriptorToBuffer(&buffer, endpoint_descriptor);
+      }
+    }
+  }
+  return buffer;
 }
 
 std::vector<u8> USB_HIDv4::GetDeviceEntry(const USB::Device& device) const
@@ -216,7 +253,7 @@ std::vector<u8> USB_HIDv4::GetDeviceEntry(const USB::Device& device) const
   //   4-8 bytes: device ID
   //   the rest of the buffer is device descriptors data
   std::vector<u8> entry(8);
-  const std::vector<u8> descriptors = device.GetDescriptorsUSBV4();
+  const std::vector<u8> descriptors = GetDescriptors(device);
   const u32 entry_size = Common::swap32(static_cast<u32>(entry.size() + descriptors.size()));
   const u32 ios_device_id = Common::swap32(m_device_ids.at(device.GetId()));
   std::memcpy(entry.data(), &entry_size, sizeof(entry_size));

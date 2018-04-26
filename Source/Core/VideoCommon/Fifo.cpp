@@ -2,6 +2,8 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include "VideoCommon/Fifo.h"
+
 #include <atomic>
 #include <cstring>
 
@@ -17,18 +19,16 @@
 #include "Core/ConfigManager.h"
 #include "Core/CoreTiming.h"
 #include "Core/HW/Memmap.h"
-#include "Core/HW/SystemTimers.h"
 #include "Core/Host.h"
-#include "Core/NetPlayProto.h"
 
 #include "VideoCommon/AsyncRequests.h"
 #include "VideoCommon/CPMemory.h"
 #include "VideoCommon/CommandProcessor.h"
 #include "VideoCommon/DataReader.h"
-#include "VideoCommon/Fifo.h"
 #include "VideoCommon/OpcodeDecoding.h"
 #include "VideoCommon/VertexLoaderManager.h"
 #include "VideoCommon/VertexManagerBase.h"
+#include "VideoCommon/VideoBackendBase.h"
 
 namespace Fifo
 {
@@ -145,7 +145,7 @@ void ExitGpuLoop()
 
   // Terminate GPU thread loop
   s_emu_running_state.Set();
-  s_gpu_mainloop.Stop(false);
+  s_gpu_mainloop.Stop(s_gpu_mainloop.kNonBlock);
 }
 
 void EmulatorState(bool running)
@@ -192,7 +192,7 @@ void SyncGPU(SyncGPUReason reason, bool may_move_read_ptr)
   }
 }
 
-void PushFifoAuxBuffer(void* ptr, size_t size)
+void PushFifoAuxBuffer(const void* ptr, size_t size)
 {
   if (size > (size_t)(s_fifo_aux_data + FIFO_SIZE - s_fifo_aux_write_ptr))
   {
@@ -230,8 +230,7 @@ static void ReadDataFromFifo(u32 readPtr)
     size_t existing_len = s_video_buffer_write_ptr - s_video_buffer_read_ptr;
     if (len > (size_t)(FIFO_SIZE - existing_len))
     {
-      PanicAlert("FIFO out of bounds (existing %zu + new %zu > %lu)", existing_len, len,
-                 (unsigned long)FIFO_SIZE);
+      PanicAlert("FIFO out of bounds (existing %zu + new %zu > %u)", existing_len, len, FIFO_SIZE);
       return;
     }
     memmove(s_video_buffer, s_video_buffer_read_ptr, existing_len);
@@ -268,8 +267,7 @@ static void ReadDataFromFifoOnCPU(u32 readPtr)
     size_t existing_len = write_ptr - s_video_buffer_pp_read_ptr;
     if (len > (size_t)(FIFO_SIZE - existing_len))
     {
-      PanicAlert("FIFO out of bounds (existing %zu + new %zu > %lu)", existing_len, len,
-                 (unsigned long)FIFO_SIZE);
+      PanicAlert("FIFO out of bounds (existing %zu + new %zu > %u)", existing_len, len, FIFO_SIZE);
       return;
     }
   }
@@ -300,8 +298,6 @@ void RunGpuLoop()
   s_gpu_mainloop.Run(
       [] {
         const SConfig& param = SConfig::GetInstance();
-
-        g_video_backend->PeekMessages();
 
         // Do nothing while paused
         if (!s_emu_running_state.IsSet())
@@ -346,17 +342,17 @@ void RunGpuLoop()
             else
               readPtr += 32;
 
-            _assert_msg_(COMMANDPROCESSOR, (s32)fifo.CPReadWriteDistance - 32 >= 0,
-                         "Negative fifo.CPReadWriteDistance = %i in FIFO Loop !\nThat can produce "
-                         "instability in the game. Please report it.",
-                         fifo.CPReadWriteDistance - 32);
+            ASSERT_MSG(COMMANDPROCESSOR, (s32)fifo.CPReadWriteDistance - 32 >= 0,
+                       "Negative fifo.CPReadWriteDistance = %i in FIFO Loop !\nThat can produce "
+                       "instability in the game. Please report it.",
+                       fifo.CPReadWriteDistance - 32);
 
             u8* write_ptr = s_video_buffer_write_ptr;
             s_video_buffer_read_ptr = OpcodeDecoder::Run(
                 DataReader(s_video_buffer_read_ptr, write_ptr), &cyclesExecuted, false);
 
             Common::AtomicStore(fifo.CPReadPointer, readPtr);
-            Common::AtomicAdd(fifo.CPReadWriteDistance, -32);
+            Common::AtomicAdd(fifo.CPReadWriteDistance, static_cast<u32>(-32));
             if ((write_ptr - s_video_buffer_read_ptr) == 0)
               Common::AtomicStore(fifo.SafeCPReadPointer, fifo.CPReadPointer);
 
@@ -504,14 +500,6 @@ void UpdateWantDeterminism(bool want)
   {
   case GPU_DETERMINISM_AUTO:
     gpu_thread = want;
-
-    // Hack: For now movies are an exception to this being on (but not
-    // to wanting determinism in general).  Once vertex arrays are
-    // fixed, there should be no reason to want this off for movies by
-    // default, so this can be removed.
-    if (!NetPlay::IsNetPlayRunning())
-      gpu_thread = false;
-
     break;
   case GPU_DETERMINISM_NONE:
     gpu_thread = false;

@@ -5,9 +5,13 @@
 #pragma once
 
 #include <string>
+#include <vector>
+
 #include <wx/colour.h>
 #include <wx/gdicmn.h>
 #include <wx/string.h>
+
+#include "Common/CommonTypes.h"
 
 class wxControl;
 class wxBitmap;
@@ -17,6 +21,11 @@ class wxSpinCtrl;
 class wxToolBar;
 class wxTopLevelWindow;
 class wxWindow;
+
+namespace UICommon
+{
+struct GameBanner;
+}
 
 namespace WxUtils
 {
@@ -95,6 +104,9 @@ constexpr LSIFlags operator&(LSIFlags left, LSIFlags right)
   return static_cast<LSIFlags>(static_cast<unsigned int>(left) & right);
 }
 
+wxImage ToWxImage(const UICommon::GameBanner& banner);
+wxImage ToWxImage(const std::vector<u32>& buffer, int width, int height);
+
 // Swiss army knife loader function for preparing a scaled resource image file.
 // Only the path and context are mandatory, other parameters can be ignored.
 // NOTE: All size parameters are in window pixels, not DIPs or framebuffer pixels.
@@ -145,3 +157,4 @@ wxImage ScaleImage(wxImage image, double source_scale_factor = 1.0,
 
 std::string WxStrToStr(const wxString& str);
 wxString StrToWxStr(const std::string& str);
+unsigned long WxStrToUL(const wxString& str);

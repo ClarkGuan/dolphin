@@ -50,6 +50,31 @@ static void UpdateInterrupts_Wrapper(u64 userdata, s64 cyclesLate)
   UpdateInterrupts(userdata);
 }
 
+void SCPFifoStruct::DoState(PointerWrap& p)
+{
+  p.Do(CPBase);
+  p.Do(CPEnd);
+  p.Do(CPHiWatermark);
+  p.Do(CPLoWatermark);
+  p.Do(CPReadWriteDistance);
+  p.Do(CPWritePointer);
+  p.Do(CPReadPointer);
+  p.Do(CPBreakpoint);
+  p.Do(SafeCPReadPointer);
+
+  p.Do(bFF_GPLinkEnable);
+  p.Do(bFF_GPReadEnable);
+  p.Do(bFF_BPEnable);
+  p.Do(bFF_BPInt);
+  p.Do(bFF_Breakpoint);
+
+  p.Do(bFF_LoWatermarkInt);
+  p.Do(bFF_HiWatermarkInt);
+
+  p.Do(bFF_LoWatermark);
+  p.Do(bFF_HiWatermark);
+}
+
 void DoState(PointerWrap& p)
 {
   p.DoPOD(m_CPStatusReg);
@@ -60,7 +85,7 @@ void DoState(PointerWrap& p)
   p.Do(m_bboxright);
   p.Do(m_bboxbottom);
   p.Do(m_tokenReg);
-  p.Do(fifo);
+  fifo.DoState(p);
 
   p.Do(s_interrupt_set);
   p.Do(s_interrupt_waiting);
@@ -308,16 +333,16 @@ void GatherPipeBursted()
 
   Fifo::RunGpu();
 
-  _assert_msg_(COMMANDPROCESSOR, fifo.CPReadWriteDistance <= fifo.CPEnd - fifo.CPBase,
-               "FIFO is overflowed by GatherPipe !\nCPU thread is too fast!");
+  ASSERT_MSG(COMMANDPROCESSOR, fifo.CPReadWriteDistance <= fifo.CPEnd - fifo.CPBase,
+             "FIFO is overflowed by GatherPipe !\nCPU thread is too fast!");
 
   // check if we are in sync
-  _assert_msg_(COMMANDPROCESSOR, fifo.CPWritePointer == ProcessorInterface::Fifo_CPUWritePointer,
-               "FIFOs linked but out of sync");
-  _assert_msg_(COMMANDPROCESSOR, fifo.CPBase == ProcessorInterface::Fifo_CPUBase,
-               "FIFOs linked but out of sync");
-  _assert_msg_(COMMANDPROCESSOR, fifo.CPEnd == ProcessorInterface::Fifo_CPUEnd,
-               "FIFOs linked but out of sync");
+  ASSERT_MSG(COMMANDPROCESSOR, fifo.CPWritePointer == ProcessorInterface::Fifo_CPUWritePointer,
+             "FIFOs linked but out of sync");
+  ASSERT_MSG(COMMANDPROCESSOR, fifo.CPBase == ProcessorInterface::Fifo_CPUBase,
+             "FIFOs linked but out of sync");
+  ASSERT_MSG(COMMANDPROCESSOR, fifo.CPEnd == ProcessorInterface::Fifo_CPUEnd,
+             "FIFOs linked but out of sync");
 }
 
 void UpdateInterrupts(u64 userdata)

@@ -14,6 +14,7 @@
 
 #include "VideoBackends/Vulkan/CommandBufferManager.h"
 #include "VideoBackends/Vulkan/VulkanContext.h"
+#include "VideoCommon/RenderBase.h"
 
 #if defined(VK_USE_PLATFORM_XLIB_KHR)
 #include <X11/Xlib.h>
@@ -33,7 +34,6 @@ SwapChain::~SwapChain()
 {
   DestroySwapChainImages();
   DestroySwapChain();
-  DestroyRenderPass();
   DestroySurface();
 }
 
@@ -155,7 +155,7 @@ bool SwapChain::SelectSurfaceFormat()
   std::vector<VkSurfaceFormatKHR> surface_formats(format_count);
   res = vkGetPhysicalDeviceSurfaceFormatsKHR(g_vulkan_context->GetPhysicalDevice(), m_surface,
                                              &format_count, surface_formats.data());
-  _assert_(res == VK_SUCCESS);
+  ASSERT(res == VK_SUCCESS);
 
   // If there is a single undefined surface format, the device doesn't care, so we'll just use RGBA
   if (surface_formats[0].format == VK_FORMAT_UNDEFINED)
@@ -189,7 +189,7 @@ bool SwapChain::SelectPresentMode()
   std::vector<VkPresentModeKHR> present_modes(mode_count);
   res = vkGetPhysicalDeviceSurfacePresentModesKHR(g_vulkan_context->GetPhysicalDevice(), m_surface,
                                                   &mode_count, present_modes.data());
-  _assert_(res == VK_SUCCESS);
+  ASSERT(res == VK_SUCCESS);
 
   // Checks if a particular mode is supported, if it is, returns that mode.
   auto CheckForMode = [&present_modes](VkPresentModeKHR check_mode) {
@@ -229,48 +229,9 @@ bool SwapChain::SelectPresentMode()
 bool SwapChain::CreateRenderPass()
 {
   // render pass for rendering to the swap chain
-  VkAttachmentDescription present_render_pass_attachments[] = {
-      {0, m_surface_format.format, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR,
-       VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-       VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}};
-
-  VkAttachmentReference present_render_pass_color_attachment_references[] = {
-      {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}};
-
-  VkSubpassDescription present_render_pass_subpass_descriptions[] = {
-      {0, VK_PIPELINE_BIND_POINT_GRAPHICS, 0, nullptr, 1,
-       present_render_pass_color_attachment_references, nullptr, nullptr, 0, nullptr}};
-
-  VkRenderPassCreateInfo present_render_pass_info = {
-      VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-      nullptr,
-      0,
-      static_cast<u32>(ArraySize(present_render_pass_attachments)),
-      present_render_pass_attachments,
-      static_cast<u32>(ArraySize(present_render_pass_subpass_descriptions)),
-      present_render_pass_subpass_descriptions,
-      0,
-      nullptr};
-
-  VkResult res = vkCreateRenderPass(g_vulkan_context->GetDevice(), &present_render_pass_info,
-                                    nullptr, &m_render_pass);
-  if (res != VK_SUCCESS)
-  {
-    LOG_VULKAN_ERROR(res, "vkCreateRenderPass (present) failed: ");
-    return false;
-  }
-
-  return true;
-}
-
-void SwapChain::DestroyRenderPass()
-{
-  if (!m_render_pass)
-    return;
-
-  vkDestroyRenderPass(g_vulkan_context->GetDevice(), m_render_pass, nullptr);
-  m_render_pass = VK_NULL_HANDLE;
+  m_render_pass = g_object_cache->GetRenderPass(m_surface_format.format, VK_FORMAT_UNDEFINED, 1,
+                                                VK_ATTACHMENT_LOAD_OP_CLEAR);
+  return m_render_pass != VK_NULL_HANDLE;
 }
 
 bool SwapChain::CreateSwapChain()
@@ -301,11 +262,13 @@ bool SwapChain::CreateSwapChain()
   VkExtent2D size = surface_capabilities.currentExtent;
   if (size.width == UINT32_MAX)
   {
-    size.width = std::min(std::max(surface_capabilities.minImageExtent.width, 640u),
-                          surface_capabilities.maxImageExtent.width);
-    size.height = std::min(std::max(surface_capabilities.minImageExtent.height, 480u),
-                           surface_capabilities.maxImageExtent.height);
+    size.width = std::max(g_renderer->GetBackbufferWidth(), 1);
+    size.height = std::max(g_renderer->GetBackbufferHeight(), 1);
   }
+  size.width = MathUtil::Clamp(size.width, surface_capabilities.minImageExtent.width,
+                               surface_capabilities.maxImageExtent.width);
+  size.height = MathUtil::Clamp(size.height, surface_capabilities.minImageExtent.height,
+                                surface_capabilities.maxImageExtent.height);
 
   // Prefer identity transform if possible
   VkSurfaceTransformFlagBitsKHR transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
@@ -320,11 +283,13 @@ bool SwapChain::CreateSwapChain()
     return false;
   }
 
+  // Select the number of image layers for Quad-Buffered stereoscopy
+  uint32_t image_layers = g_ActiveConfig.stereo_mode == StereoMode::QuadBuffer ? 2 : 1;
+
   // Store the old/current swap chain when recreating for resize
   VkSwapchainKHR old_swap_chain = m_swap_chain;
 
   // Now we can actually create the swap chain
-  // TODO: Handle case where the present queue is not the graphics queue.
   VkSwapchainCreateInfoKHR swap_chain_info = {VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
                                               nullptr,
                                               0,
@@ -333,7 +298,7 @@ bool SwapChain::CreateSwapChain()
                                               m_surface_format.format,
                                               m_surface_format.colorSpace,
                                               size,
-                                              1,
+                                              image_layers,
                                               image_usage,
                                               VK_SHARING_MODE_EXCLUSIVE,
                                               0,
@@ -343,6 +308,17 @@ bool SwapChain::CreateSwapChain()
                                               m_present_mode,
                                               VK_TRUE,
                                               old_swap_chain};
+  std::array<uint32_t, 2> indices = {{
+      g_vulkan_context->GetGraphicsQueueFamilyIndex(),
+      g_vulkan_context->GetPresentQueueFamilyIndex(),
+  }};
+  if (g_vulkan_context->GetGraphicsQueueFamilyIndex() !=
+      g_vulkan_context->GetPresentQueueFamilyIndex())
+  {
+    swap_chain_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+    swap_chain_info.queueFamilyIndexCount = 2;
+    swap_chain_info.pQueueFamilyIndices = indices.data();
+  }
 
   res =
       vkCreateSwapchainKHR(g_vulkan_context->GetDevice(), &swap_chain_info, nullptr, &m_swap_chain);
@@ -359,12 +335,13 @@ bool SwapChain::CreateSwapChain()
 
   m_width = size.width;
   m_height = size.height;
+  m_layers = image_layers;
   return true;
 }
 
 bool SwapChain::SetupSwapChainImages()
 {
-  _assert_(m_swap_chain_images.empty());
+  ASSERT(m_swap_chain_images.empty());
 
   uint32_t image_count;
   VkResult res =
@@ -378,7 +355,7 @@ bool SwapChain::SetupSwapChainImages()
   std::vector<VkImage> images(image_count);
   res = vkGetSwapchainImagesKHR(g_vulkan_context->GetDevice(), m_swap_chain, &image_count,
                                 images.data());
-  _assert_(res == VK_SUCCESS);
+  ASSERT(res == VK_SUCCESS);
 
   m_swap_chain_images.reserve(image_count);
   for (uint32_t i = 0; i < image_count; i++)
@@ -400,7 +377,7 @@ bool SwapChain::SetupSwapChainImages()
                                                 &view,
                                                 m_width,
                                                 m_height,
-                                                1};
+                                                m_layers};
 
     res = vkCreateFramebuffer(g_vulkan_context->GetDevice(), &framebuffer_info, nullptr,
                               &image.framebuffer);
@@ -458,20 +435,32 @@ bool SwapChain::ResizeSwapChain()
   return true;
 }
 
+bool SwapChain::RecreateSwapChain()
+{
+  DestroySwapChainImages();
+  DestroySwapChain();
+  if (!CreateSwapChain() || !SetupSwapChainImages())
+  {
+    PanicAlert("Failed to re-configure swap chain images, this is fatal (for now)");
+    return false;
+  }
+
+  return true;
+}
+
 bool SwapChain::SetVSync(bool enabled)
 {
   if (m_vsync_enabled == enabled)
     return true;
 
-  // Resizing recreates the swap chain with the new present mode.
+  // Recreate the swap chain with the new present mode.
   m_vsync_enabled = enabled;
-  return ResizeSwapChain();
+  return RecreateSwapChain();
 }
 
 bool SwapChain::RecreateSurface(void* native_handle)
 {
   // Destroy the old swap chain, images, and surface.
-  DestroyRenderPass();
   DestroySwapChainImages();
   DestroySwapChain();
   DestroySurface();
@@ -481,6 +470,22 @@ bool SwapChain::RecreateSurface(void* native_handle)
   m_surface = CreateVulkanSurface(g_vulkan_context->GetVulkanInstance(), native_handle);
   if (m_surface == VK_NULL_HANDLE)
     return false;
+
+  // The validation layers get angry at us if we don't call this before creating the swapchain.
+  VkBool32 present_supported = VK_TRUE;
+  VkResult res = vkGetPhysicalDeviceSurfaceSupportKHR(
+      g_vulkan_context->GetPhysicalDevice(), g_vulkan_context->GetPresentQueueFamilyIndex(),
+      m_surface, &present_supported);
+  if (res != VK_SUCCESS)
+  {
+    LOG_VULKAN_ERROR(res, "vkGetPhysicalDeviceSurfaceSupportKHR failed: ");
+    return false;
+  }
+  if (!present_supported)
+  {
+    PanicAlert("Recreated surface does not support presenting.");
+    return false;
+  }
 
   // Finally re-create the swap chain
   if (!CreateSwapChain() || !SetupSwapChainImages() || !CreateRenderPass())

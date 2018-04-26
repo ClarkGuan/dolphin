@@ -13,6 +13,7 @@
 #include "InputCommon/ControllerEmu/ControlGroup/Buttons.h"
 #include "InputCommon/ControllerEmu/ControlGroup/ControlGroup.h"
 #include "InputCommon/ControllerEmu/ControlGroup/MixedTriggers.h"
+#include "InputCommon/ControllerEmu/Setting/BooleanSetting.h"
 #include "InputCommon/GCPadStatus.h"
 
 static const u16 button_bitmasks[] = {
@@ -26,13 +27,14 @@ static const u16 button_bitmasks[] = {
 };
 
 static const u16 trigger_bitmasks[] = {
-    PAD_TRIGGER_L, PAD_TRIGGER_R,
+    PAD_TRIGGER_L,
+    PAD_TRIGGER_R,
 };
 
 static const u16 dpad_bitmasks[] = {PAD_BUTTON_UP, PAD_BUTTON_DOWN, PAD_BUTTON_LEFT,
                                     PAD_BUTTON_RIGHT};
 
-static const char* const named_buttons[] = {"A", "B", "X", "Y", "Z", _trans("Start")};
+static const char* const named_buttons[] = {"A", "B", "X", "Y", "Z", "Start"};
 
 static const char* const named_triggers[] = {
     // i18n: The left trigger button (labeled L on real controllers)
@@ -48,8 +50,15 @@ GCPad::GCPad(const unsigned int index) : m_index(index)
 {
   // buttons
   groups.emplace_back(m_buttons = new ControllerEmu::Buttons(_trans("Buttons")));
-  for (unsigned int i = 0; i < sizeof(named_buttons) / sizeof(*named_buttons); ++i)
-    m_buttons->controls.emplace_back(new ControllerEmu::Input(named_buttons[i]));
+  for (const char* named_button : named_buttons)
+  {
+    const bool is_start = named_button == std::string("Start");
+    const ControllerEmu::Translatability translate =
+        is_start ? ControllerEmu::Translate : ControllerEmu::DoNotTranslate;
+    // i18n: The START/PAUSE button on GameCube controllers
+    const std::string& ui_name = is_start ? _trans("START") : named_button;
+    m_buttons->controls.emplace_back(new ControllerEmu::Input(translate, named_button, ui_name));
+  }
 
   // sticks
   groups.emplace_back(m_main_stick = new ControllerEmu::AnalogStick(
@@ -59,30 +68,38 @@ GCPad::GCPad(const unsigned int index) : m_index(index)
 
   // triggers
   groups.emplace_back(m_triggers = new ControllerEmu::MixedTriggers(_trans("Triggers")));
-  for (auto& named_trigger : named_triggers)
-    m_triggers->controls.emplace_back(new ControllerEmu::Input(named_trigger));
+  for (const char* named_trigger : named_triggers)
+  {
+    m_triggers->controls.emplace_back(
+        new ControllerEmu::Input(ControllerEmu::Translate, named_trigger));
+  }
 
   // rumble
   groups.emplace_back(m_rumble = new ControllerEmu::ControlGroup(_trans("Rumble")));
-  m_rumble->controls.emplace_back(new ControllerEmu::Output(_trans("Motor")));
+  m_rumble->controls.emplace_back(
+      new ControllerEmu::Output(ControllerEmu::Translate, _trans("Motor")));
 
   // Microphone
   groups.emplace_back(m_mic = new ControllerEmu::Buttons(_trans("Microphone")));
-  m_mic->controls.emplace_back(new ControllerEmu::Input(_trans("Button")));
+  m_mic->controls.emplace_back(
+      new ControllerEmu::Input(ControllerEmu::Translate, _trans("Button")));
 
   // dpad
   groups.emplace_back(m_dpad = new ControllerEmu::Buttons(_trans("D-Pad")));
-  for (auto& named_direction : named_directions)
-    m_dpad->controls.emplace_back(new ControllerEmu::Input(named_direction));
+  for (const char* named_direction : named_directions)
+  {
+    m_dpad->controls.emplace_back(
+        new ControllerEmu::Input(ControllerEmu::Translate, named_direction));
+  }
 
   // options
   groups.emplace_back(m_options = new ControllerEmu::ControlGroup(_trans("Options")));
   m_options->boolean_settings.emplace_back(
-      std::make_unique<ControllerEmu::ControlGroup::BackgroundInputSetting>(
-          _trans("Background Input")));
-  m_options->boolean_settings.emplace_back(
-      std::make_unique<ControllerEmu::ControlGroup::BooleanSetting>(
-          _trans("Iterative Input"), false, ControllerEmu::ControlGroup::SettingType::VIRTUAL));
+      // i18n: Treat a controller as always being connected regardless of what
+      // devices the user actually has plugged in
+      m_always_connected = new ControllerEmu::BooleanSetting(_trans("Always Connected"), false));
+  m_options->boolean_settings.emplace_back(std::make_unique<ControllerEmu::BooleanSetting>(
+      _trans("Iterative Input"), false, ControllerEmu::SettingType::VIRTUAL));
 }
 
 std::string GCPad::GetName() const
@@ -121,6 +138,12 @@ GCPadStatus GCPad::GetInput() const
 
   ControlState x, y, triggers[2];
   GCPadStatus pad = {};
+
+  if (!(m_always_connected->GetValue() || IsDefaultDeviceConnected()))
+  {
+    pad.isConnected = false;
+    return pad;
+  }
 
   // buttons
   m_buttons->GetState(&pad.button, button_bitmasks);

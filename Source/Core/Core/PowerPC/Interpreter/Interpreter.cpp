@@ -2,7 +2,10 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
-#include <assert.h>
+#include "Core/PowerPC/Interpreter/Interpreter.h"
+
+#include <array>
+#include <cassert>
 #include <cinttypes>
 #include <string>
 
@@ -17,7 +20,6 @@
 #include "Core/HLE/HLE.h"
 #include "Core/HW/CPU.h"
 #include "Core/Host.h"
-#include "Core/PowerPC/Interpreter/Interpreter.h"
 #include "Core/PowerPC/PPCTables.h"
 #include "Core/PowerPC/PowerPC.h"
 
@@ -63,6 +65,7 @@ void Interpreter::RunTable63(UGeckoInstruction inst)
 
 void Interpreter::Init()
 {
+  InitializeInstructionTables();
   m_reserve = false;
   m_end_block = false;
 }
@@ -89,8 +92,9 @@ static void Trace(UGeckoInstruction& inst)
   }
 
   std::string ppc_inst = GekkoDisassembler::Disassemble(inst.hex, PC);
-  DEBUG_LOG(POWERPC, "INTER PC: %08x SRR0: %08x SRR1: %08x CRval: %016lx FPSCR: %08x MSR: %08x LR: "
-                     "%08x %s %08x %s",
+  DEBUG_LOG(POWERPC,
+            "INTER PC: %08x SRR0: %08x SRR1: %08x CRval: %016lx FPSCR: %08x MSR: %08x LR: "
+            "%08x %s %08x %s",
             PC, SRR0, SRR1, (unsigned long)PowerPC::ppcState.cr_val[0], PowerPC::ppcState.fpscr,
             PowerPC::ppcState.msr, PowerPC::ppcState.spr[8], regs.c_str(), inst.hex,
             ppc_inst.c_str());
@@ -98,18 +102,17 @@ static void Trace(UGeckoInstruction& inst)
 
 int Interpreter::SingleStepInner()
 {
-  static UGeckoInstruction instCode;
-  u32 function = HLE::GetFunctionIndex(PC);
+  u32 function = HLE::GetFirstFunctionIndex(PC);
   if (function != 0)
   {
-    int type = HLE::GetFunctionTypeByIndex(function);
-    if (type == HLE::HLE_HOOK_START || type == HLE::HLE_HOOK_REPLACE)
+    HLE::HookType type = HLE::GetFunctionTypeByIndex(function);
+    if (type == HLE::HookType::Start || type == HLE::HookType::Replace)
     {
-      int flags = HLE::GetFunctionFlagsByIndex(function);
+      HLE::HookFlag flags = HLE::GetFunctionFlagsByIndex(function);
       if (HLE::IsEnabled(flags))
       {
         HLEFunction(function);
-        if (type == HLE::HLE_HOOK_START)
+        if (type == HLE::HookType::Start)
         {
           // Run the original.
           function = 0;
@@ -135,7 +138,7 @@ int Interpreter::SingleStepInner()
 #endif
 
     NPC = PC + sizeof(UGeckoInstruction);
-    instCode.hex = PowerPC::Read_Opcode(PC);
+    m_prev_inst.hex = PowerPC::Read_Opcode(PC);
 
     // Uncomment to trace the interpreter
     // if ((PC & 0xffffff)>=0x0ab54c && (PC & 0xffffff)<=0x0ab624)
@@ -145,15 +148,15 @@ int Interpreter::SingleStepInner()
 
     if (startTrace)
     {
-      Trace(instCode);
+      Trace(m_prev_inst);
     }
 
-    if (instCode.hex != 0)
+    if (m_prev_inst.hex != 0)
     {
-      UReg_MSR& msr = (UReg_MSR&)MSR;
+      const UReg_MSR msr{MSR};
       if (msr.FP)  // If FPU is enabled, just execute
       {
-        m_op_table[instCode.OPCD](instCode);
+        m_op_table[m_prev_inst.OPCD](m_prev_inst);
         if (PowerPC::ppcState.Exceptions & EXCEPTION_DSI)
         {
           PowerPC::CheckExceptions();
@@ -163,9 +166,9 @@ int Interpreter::SingleStepInner()
       else
       {
         // check if we have to generate a FPU unavailable exception
-        if (!PPCTables::UsesFPU(instCode))
+        if (!PPCTables::UsesFPU(m_prev_inst))
         {
-          m_op_table[instCode.OPCD](instCode);
+          m_op_table[m_prev_inst.OPCD](m_prev_inst);
           if (PowerPC::ppcState.Exceptions & EXCEPTION_DSI)
           {
             PowerPC::CheckExceptions();
@@ -190,7 +193,7 @@ int Interpreter::SingleStepInner()
   last_pc = PC;
   PC = NPC;
 
-  GekkoOPInfo* opinfo = GetOpInfo(instCode);
+  const GekkoOPInfo* opinfo = PPCTables::GetOpInfo(m_prev_inst);
   return opinfo->numCycles;
 }
 
@@ -202,7 +205,7 @@ void Interpreter::SingleStep()
   SingleStepInner();
 
   // The interpreter ignores instruction timing information outside the 'fast runloop'.
-  CoreTiming::g_slice_length = 1;
+  CoreTiming::g.slice_length = 1;
   PowerPC::ppcState.downcount = 0;
 
   if (PowerPC::ppcState.Exceptions)
@@ -223,7 +226,7 @@ int ShowSteps = 300;
 // FastRun - inspired by GCemu (to imitate the JIT so that they can be compared).
 void Interpreter::Run()
 {
-  while (!CPU::GetState())
+  while (CPU::GetState() == CPU::State::Running)
   {
     // CoreTiming Advance() ends the previous slice and declares the start of the next
     // one so it must always be called at the start. At boot, we are in slice -1 and must
@@ -317,9 +320,9 @@ void Interpreter::unknown_instruction(UGeckoInstruction inst)
   for (int i = 0; i < 32; i += 4)
     NOTICE_LOG(POWERPC, "r%d: 0x%08x r%d: 0x%08x r%d:0x%08x r%d: 0x%08x", i, rGPR[i], i + 1,
                rGPR[i + 1], i + 2, rGPR[i + 2], i + 3, rGPR[i + 3]);
-  _assert_msg_(POWERPC, 0,
-               "\nIntCPU: Unknown instruction %08x at PC = %08x  last_PC = %08x  LR = %08x\n",
-               inst.hex, PC, last_pc, LR);
+  ASSERT_MSG(POWERPC, 0,
+             "\nIntCPU: Unknown instruction %08x at PC = %08x  last_PC = %08x  LR = %08x\n",
+             inst.hex, PC, last_pc, LR);
 }
 
 void Interpreter::ClearCache()
@@ -327,7 +330,7 @@ void Interpreter::ClearCache()
   // Do nothing.
 }
 
-const char* Interpreter::GetName()
+const char* Interpreter::GetName() const
 {
 #ifdef _ARCH_64
   return "Interpreter64";

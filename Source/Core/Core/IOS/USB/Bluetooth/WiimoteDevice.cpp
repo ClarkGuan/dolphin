@@ -2,6 +2,8 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include "Core/IOS/USB/Bluetooth/WiimoteDevice.h"
+
 #include <cstring>
 #include <memory>
 #include <utility>
@@ -17,7 +19,6 @@
 #include "Core/HW/Wiimote.h"
 #include "Core/Host.h"
 #include "Core/IOS/USB/Bluetooth/BTEmu.h"
-#include "Core/IOS/USB/Bluetooth/WiimoteDevice.h"
 #include "Core/IOS/USB/Bluetooth/WiimoteHIDAttr.h"
 #include "Core/IOS/USB/Bluetooth/l2cap.h"
 
@@ -36,16 +37,9 @@ WiimoteDevice::WiimoteDevice(Device::BluetoothEmu* host, int number, bdaddr_t bd
   m_ConnectionHandle = 0x100 + number;
   memset(m_LinkKey, 0xA0 + number, HCI_KEY_SIZE);
 
-  bdaddr_t _nullBD = BDADDR_ANY;
-  if (memcmp(&m_BD, &_nullBD, sizeof(bdaddr_t)) == 0)
-  {
-    m_BD.b[0] = 0x11;
-    m_BD.b[1] = 0x02;
-    m_BD.b[2] = 0x19;
-    m_BD.b[3] = 0x79;
-    m_BD.b[4] = 0x00;
-    m_BD.b[5] = number;
-  }
+  if (m_BD == BDADDR_ANY)
+    m_BD = {{0x11, 0x02, 0x19, 0x79, static_cast<u8>(number)}};
+
   uclass[0] = 0x00;
   uclass[1] = 0x04;
   uclass[2] = 0x48;
@@ -261,7 +255,7 @@ void WiimoteDevice::ExecuteL2capCmd(u8* _pData, u32 _Size)
 
   default:
   {
-    _dbg_assert_msg_(IOS_WIIMOTE, DoesChannelExist(pHeader->dcid),
+    DEBUG_ASSERT_MSG(IOS_WIIMOTE, DoesChannelExist(pHeader->dcid),
                      "L2CAP: SendACLPacket to unknown channel %i", pHeader->dcid);
     CChannelMap::iterator itr = m_Channel.find(pHeader->dcid);
 
@@ -385,21 +379,13 @@ void WiimoteDevice::ReceiveConnectionReq(u8 _Ident, u8* _pData, u32 _Size)
 
   DEBUG_LOG(IOS_WIIMOTE, "[L2CAP] SendConnectionResponse");
   SendCommandToACL(_Ident, L2CAP_CONNECT_RSP, sizeof(l2cap_con_rsp_cp), (u8*)&Rsp);
-
-  // update state machine
-  /*
-  if (rChannel.PSM == L2CAP_PSM_HID_CNTL)
-    m_HIDControlChannel_Connected = true;
-  else if (rChannel.PSM == L2CAP_PSM_HID_INTR)
-    m_HIDInterruptChannel_Connected = true;
-  */
 }
 
 void WiimoteDevice::ReceiveConnectionResponse(u8 _Ident, u8* _pData, u32 _Size)
 {
   l2cap_con_rsp_cp* rsp = (l2cap_con_rsp_cp*)_pData;
 
-  _dbg_assert_(IOS_WIIMOTE, _Size == sizeof(l2cap_con_rsp_cp));
+  DEBUG_ASSERT(_Size == sizeof(l2cap_con_rsp_cp));
 
   DEBUG_LOG(IOS_WIIMOTE, "[L2CAP] ReceiveConnectionResponse");
   DEBUG_LOG(IOS_WIIMOTE, "    DCID: 0x%04x", rsp->dcid);
@@ -407,9 +393,9 @@ void WiimoteDevice::ReceiveConnectionResponse(u8 _Ident, u8* _pData, u32 _Size)
   DEBUG_LOG(IOS_WIIMOTE, "    Result: 0x%04x", rsp->result);
   DEBUG_LOG(IOS_WIIMOTE, "    Status: 0x%04x", rsp->status);
 
-  _dbg_assert_(IOS_WIIMOTE, rsp->result == L2CAP_SUCCESS);
-  _dbg_assert_(IOS_WIIMOTE, rsp->status == L2CAP_NO_INFO);
-  _dbg_assert_(IOS_WIIMOTE, DoesChannelExist(rsp->scid));
+  DEBUG_ASSERT(rsp->result == L2CAP_SUCCESS);
+  DEBUG_ASSERT(rsp->status == L2CAP_NO_INFO);
+  DEBUG_ASSERT(DoesChannelExist(rsp->scid));
 
   SChannel& rChannel = m_Channel[rsp->scid];
   rChannel.DCID = rsp->dcid;
@@ -426,9 +412,9 @@ void WiimoteDevice::ReceiveConfigurationReq(u8 _Ident, u8* _pData, u32 _Size)
   u32 Offset = 0;
   l2cap_cfg_req_cp* pCommandConfigReq = (l2cap_cfg_req_cp*)_pData;
 
-  _dbg_assert_(IOS_WIIMOTE, pCommandConfigReq->flags ==
-                                0x00);  // 1 means that the options are send in multi-packets
-  _dbg_assert_(IOS_WIIMOTE, DoesChannelExist(pCommandConfigReq->dcid));
+  // Flags being 1 means that the options are sent in multi-packets
+  DEBUG_ASSERT(pCommandConfigReq->flags == 0x00);
+  DEBUG_ASSERT(DoesChannelExist(pCommandConfigReq->dcid));
 
   SChannel& rChannel = m_Channel[pCommandConfigReq->dcid];
 
@@ -459,7 +445,7 @@ void WiimoteDevice::ReceiveConfigurationReq(u8 _Ident, u8* _pData, u32 _Size)
     {
     case L2CAP_OPT_MTU:
     {
-      _dbg_assert_(IOS_WIIMOTE, pOptions->length == L2CAP_OPT_MTU_SIZE);
+      DEBUG_ASSERT(pOptions->length == L2CAP_OPT_MTU_SIZE);
       l2cap_cfg_opt_val_t* pMTU = (l2cap_cfg_opt_val_t*)&_pData[Offset];
       rChannel.MTU = pMTU->mtu;
       DEBUG_LOG(IOS_WIIMOTE, "    MTU: 0x%04x", pMTU->mtu);
@@ -468,7 +454,7 @@ void WiimoteDevice::ReceiveConfigurationReq(u8 _Ident, u8* _pData, u32 _Size)
 
     case L2CAP_OPT_FLUSH_TIMO:
     {
-      _dbg_assert_(IOS_WIIMOTE, pOptions->length == L2CAP_OPT_FLUSH_TIMO_SIZE);
+      DEBUG_ASSERT(pOptions->length == L2CAP_OPT_FLUSH_TIMO_SIZE);
       l2cap_cfg_opt_val_t* pFlushTimeOut = (l2cap_cfg_opt_val_t*)&_pData[Offset];
       rChannel.FlushTimeOut = pFlushTimeOut->flush_timo;
       DEBUG_LOG(IOS_WIIMOTE, "    FlushTimeOut: 0x%04x", pFlushTimeOut->flush_timo);
@@ -476,7 +462,7 @@ void WiimoteDevice::ReceiveConfigurationReq(u8 _Ident, u8* _pData, u32 _Size)
     break;
 
     default:
-      _dbg_assert_msg_(IOS_WIIMOTE, 0, "Unknown Option: 0x%02x", pOptions->type);
+      DEBUG_ASSERT_MSG(IOS_WIIMOTE, 0, "Unknown Option: 0x%02x", pOptions->type);
       break;
     }
 
@@ -506,7 +492,7 @@ void WiimoteDevice::ReceiveConfigurationResponse(u8 _Ident, u8* _pData, u32 _Siz
   DEBUG_LOG(IOS_WIIMOTE, "    Flags: 0x%04x", rsp->flags);
   DEBUG_LOG(IOS_WIIMOTE, "    Result: 0x%04x", rsp->result);
 
-  _dbg_assert_(IOS_WIIMOTE, rsp->result == L2CAP_SUCCESS);
+  DEBUG_ASSERT(rsp->result == L2CAP_SUCCESS);
 
   // update state machine
   SChannel& rChannel = m_Channel[rsp->scid];
@@ -585,7 +571,7 @@ void WiimoteDevice::SendDisconnectRequest(u16 scid)
 
 void WiimoteDevice::SendConfigurationRequest(u16 scid, u16 MTU, u16 FlushTimeOut)
 {
-  _dbg_assert_(IOS_WIIMOTE, DoesChannelExist(scid));
+  DEBUG_ASSERT(DoesChannelExist(scid));
   SChannel& rChannel = m_Channel[scid];
 
   u8 Buffer[1024];
@@ -635,16 +621,16 @@ void WiimoteDevice::SendConfigurationRequest(u16 scid, u16 MTU, u16 FlushTimeOut
   SendCommandToACL(L2CAP_CONFIG_REQ, L2CAP_CONFIG_REQ, Offset, Buffer);
 }
 
-//
-//
-//
-//
-// ---  SDP
-//
-//
-//
-//
-//
+  //
+  //
+  //
+  //
+  // ---  SDP
+  //
+  //
+  //
+  //
+  //
 
 #define SDP_UINT8 0x08
 #define SDP_UINT16 0x09
@@ -659,12 +645,12 @@ void WiimoteDevice::SDPSendServiceSearchResponse(u16 cid, u16 TransactionID,
   // verify block... we handle search pattern for HID service only
   {
     CBigEndianBuffer buffer(pServiceSearchPattern);
-    _dbg_assert_(IOS_WIIMOTE, buffer.Read8(0) == SDP_SEQ8);  // data sequence
-    _dbg_assert_(IOS_WIIMOTE, buffer.Read8(1) == 0x03);      // sequence size
+    DEBUG_ASSERT(buffer.Read8(0) == SDP_SEQ8);  // data sequence
+    DEBUG_ASSERT(buffer.Read8(1) == 0x03);      // sequence size
 
     // HIDClassID
-    _dbg_assert_(IOS_WIIMOTE, buffer.Read8(2) == 0x19);
-    _dbg_assert_(IOS_WIIMOTE, buffer.Read16(3) == 0x1124);
+    DEBUG_ASSERT(buffer.Read8(2) == 0x19);
+    DEBUG_ASSERT(buffer.Read16(3) == 0x1124);
   }
 
   u8 DataFrame[1000];
@@ -728,7 +714,7 @@ static int ParseAttribList(u8* pAttribIDList, u16& _startID, u16& _endID)
 
   if (MAX_LOGLEVEL >= LogTypes::LOG_LEVELS::LDEBUG)
   {
-    _dbg_assert_(IOS_WIIMOTE, sequence == SDP_SEQ8);
+    DEBUG_ASSERT(sequence == SDP_SEQ8);
     (void)seqSize;
   }
 
@@ -761,8 +747,6 @@ void WiimoteDevice::SDPSendServiceAttributeResponse(u16 cid, u16 TransactionID, 
     ERROR_LOG(IOS_WIIMOTE, "Unknown service handle %x", ServiceHandle);
     PanicAlert("Unknown service handle %x", ServiceHandle);
   }
-
-  // _dbg_assert_(IOS_WIIMOTE, ServiceHandle == 0x10000);
 
   u32 contState = ParseCont(pContinuationState);
 
@@ -806,7 +790,7 @@ void WiimoteDevice::HandleSDP(u16 cid, u8* _pData, u32 _Size)
   {
     WARN_LOG(IOS_WIIMOTE, "!!! SDP_ServiceSearchRequest !!!");
 
-    _dbg_assert_(IOS_WIIMOTE, _Size == 13);
+    DEBUG_ASSERT(_Size == 13);
 
     u16 TransactionID = buffer.Read16(1);
     u8* pServiceSearchPattern = buffer.GetPointer(5);
@@ -897,7 +881,7 @@ void WiimoteDevice::ReceiveL2capData(u16 scid, const void* _pData, u32 _Size)
   Offset += sizeof(l2cap_hdr_t);
 
   // Check if we are already reporting on this channel
-  _dbg_assert_(IOS_WIIMOTE, DoesChannelExist(scid));
+  DEBUG_ASSERT(DoesChannelExist(scid));
   SChannel& rChannel = m_Channel[scid];
 
   // Add an additional 4 byte header to the Wiimote report
@@ -908,9 +892,6 @@ void WiimoteDevice::ReceiveL2capData(u16 scid, const void* _pData, u32 _Size)
   memcpy(DataFrame + Offset, _pData, _Size);
   // Update Offset to the final size of the report
   Offset += _Size;
-
-  // Update the status bar
-  Host_SetWiiMoteConnectionState(2);
 
   // Send the report
   m_pHost->SendACLPacket(GetConnectionHandle(), DataFrame, Offset);
@@ -932,7 +913,7 @@ void Callback_WiimoteInterruptChannel(int _number, u16 _channelID, const void* _
   DEBUG_LOG(WIIMOTE, "   Channel: %x", _channelID);
 
   const auto bt = std::static_pointer_cast<IOS::HLE::Device::BluetoothEmu>(
-      IOS::HLE::GetDeviceByName("/dev/usb/oh1/57e/305"));
+      IOS::HLE::GetIOS()->GetDeviceByName("/dev/usb/oh1/57e/305"));
   if (bt)
     bt->m_WiiMotes[_number].ReceiveL2capData(_channelID, _pData, _Size);
 }

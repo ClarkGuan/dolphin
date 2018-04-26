@@ -6,11 +6,7 @@
 
 #include "Common/ChunkFile.h"
 #include "Common/MsgHandler.h"
-
-namespace Core
-{
-void DisplayMessage(const std::string& message, int time_in_ms);
-}
+#include "Core/Core.h"
 
 namespace IOS
 {
@@ -18,11 +14,11 @@ namespace HLE
 {
 namespace Device
 {
-ReturnCode BluetoothStub::Open(const OpenRequest& request)
+IPCCommandResult BluetoothStub::Open(const OpenRequest& request)
 {
   PanicAlertT("Bluetooth passthrough mode is enabled, but Dolphin was built without libusb."
               " Passthrough mode cannot be used.");
-  return IPC_ENOENT;
+  return GetDefaultReply(IPC_ENOENT);
 }
 
 void BluetoothStub::DoState(PointerWrap& p)

@@ -4,8 +4,6 @@
 
 #include "VideoBackends/Null/VertexManager.h"
 
-#include "VideoBackends/Null/ShaderCache.h"
-
 #include "VideoCommon/IndexGenerator.h"
 #include "VideoCommon/NativeVertexFormat.h"
 #include "VideoCommon/VertexLoaderManager.h"
@@ -16,13 +14,12 @@ class NullNativeVertexFormat : public NativeVertexFormat
 {
 public:
   NullNativeVertexFormat() {}
-  void SetupVertexPointers() override {}
 };
 
-NativeVertexFormat*
+std::unique_ptr<NativeVertexFormat>
 VertexManager::CreateNativeVertexFormat(const PortableVertexDeclaration& vtx_decl)
 {
-  return new NullNativeVertexFormat;
+  return std::make_unique<NullNativeVertexFormat>();
 }
 
 VertexManager::VertexManager() : m_local_v_buffer(MAXVBUFFERSIZE), m_local_i_buffer(MAXIBUFFERSIZE)
@@ -42,9 +39,6 @@ void VertexManager::ResetBuffer(u32 stride)
 
 void VertexManager::vFlush()
 {
-  VertexShaderCache::s_instance->SetShader(m_current_primitive_type);
-  GeometryShaderCache::s_instance->SetShader(m_current_primitive_type);
-  PixelShaderCache::s_instance->SetShader(m_current_primitive_type);
 }
 
 }  // namespace

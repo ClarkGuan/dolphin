@@ -14,7 +14,7 @@
 #include "Common/CommonTypes.h"
 #include "Core/HW/Wiimote.h"
 #include "Core/IOS/Device.h"
-#include "Core/IOS/IPC.h"
+#include "Core/IOS/IOS.h"
 #include "Core/IOS/USB/Bluetooth/BTBase.h"
 #include "Core/IOS/USB/Bluetooth/WiimoteDevice.h"
 #include "Core/IOS/USB/Bluetooth/hci.h"
@@ -45,11 +45,11 @@ namespace Device
 class BluetoothEmu final : public BluetoothBase
 {
 public:
-  BluetoothEmu(u32 device_id, const std::string& device_name);
+  BluetoothEmu(Kernel& ios, const std::string& device_name);
 
   virtual ~BluetoothEmu();
 
-  void Close() override;
+  IPCCommandResult Close(u32 fd) override;
   IPCCommandResult IOCtlV(const IOCtlVRequest& request) override;
 
   void Update() override;
@@ -66,7 +66,7 @@ public:
   void DoState(PointerWrap& p) override;
 
 private:
-  bdaddr_t m_ControllerBD;
+  bdaddr_t m_ControllerBD{{0x11, 0x02, 0x19, 0x79, 0x00, 0xff}};
 
   // this is used to trigger connecting via ACL
   u8 m_ScanEnable = 0;
@@ -78,17 +78,8 @@ private:
 
   class ACLPool
   {
-    struct Packet
-    {
-      u8 data[ACL_PKT_SIZE];
-      u16 size;
-      u16 conn_handle;
-    };
-
-    std::deque<Packet> m_queue;
-
   public:
-    ACLPool() : m_queue() {}
+    explicit ACLPool(Kernel& ios) : m_ios(ios), m_queue() {}
     void Store(const u8* data, const u16 size, const u16 conn_handle);
 
     void WriteToEndpoint(USB::V0BulkMessage& endpoint);
@@ -96,7 +87,18 @@ private:
     bool IsEmpty() const { return m_queue.empty(); }
     // For SaveStates
     void DoState(PointerWrap& p) { p.Do(m_queue); }
-  } m_acl_pool;
+
+  private:
+    struct Packet
+    {
+      u8 data[ACL_PKT_SIZE];
+      u16 size;
+      u16 conn_handle;
+    };
+
+    Kernel& m_ios;
+    std::deque<Packet> m_queue;
+  } m_acl_pool{m_ios};
 
   u32 m_PacketCount[MAX_BBMOTES] = {};
   u64 m_last_ticks = 0;
@@ -190,7 +192,7 @@ private:
     u8 num_registered;
     _conf_pad_device registered[CONF_PAD_MAX_REGISTERED];
     _conf_pad_device active[MAX_BBMOTES];
-    u8 unknown[0x45];
+    _conf_pad_device unknown;
   };
 #pragma pack(pop)
 };

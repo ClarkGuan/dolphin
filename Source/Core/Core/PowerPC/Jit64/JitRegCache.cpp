@@ -2,6 +2,8 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include "Core/PowerPC/Jit64/JitRegCache.h"
+
 #include <algorithm>
 #include <cinttypes>
 #include <cmath>
@@ -13,7 +15,6 @@
 #include "Common/MsgHandler.h"
 #include "Common/x64Emitter.h"
 #include "Core/PowerPC/Jit64/Jit.h"
-#include "Core/PowerPC/Jit64/JitRegCache.h"
 #include "Core/PowerPC/PowerPC.h"
 
 using namespace Gen;
@@ -30,7 +31,7 @@ void RegCache::Start()
     xreg.free = true;
     xreg.dirty = false;
     xreg.locked = false;
-    xreg.ppcReg = INVALID_REG;
+    xreg.ppcReg = static_cast<size_t>(INVALID_REG);
   }
   for (size_t i = 0; i < m_regs.size(); i++)
   {
@@ -63,7 +64,7 @@ void RegCache::DiscardRegContentsIfCached(size_t preg)
     X64Reg xr = m_regs[preg].location.GetSimpleReg();
     m_xregs[xr].free = true;
     m_xregs[xr].dirty = false;
-    m_xregs[xr].ppcReg = INVALID_REG;
+    m_xregs[xr].ppcReg = static_cast<size_t>(INVALID_REG);
     m_regs[preg].away = false;
     m_regs[preg].location = GetDefaultLocation(preg);
   }
@@ -97,7 +98,7 @@ void RegCache::Flush(FlushMode mode, BitSet32 regsToFlush)
       }
       else
       {
-        _assert_msg_(DYNA_REC, 0, "Jit64 - Flush unhandled case, reg %u PC: %08x", i, PC);
+        ASSERT_MSG(DYNA_REC, 0, "Jit64 - Flush unhandled case, reg %u PC: %08x", i, PC);
       }
     }
   }
@@ -216,7 +217,7 @@ void RegCache::StoreFromRegister(size_t i, FlushMode mode)
       if (mode == FlushMode::All)
       {
         m_xregs[xr].free = true;
-        m_xregs[xr].ppcReg = INVALID_REG;
+        m_xregs[xr].ppcReg = static_cast<size_t>(INVALID_REG);
         m_xregs[xr].dirty = false;
       }
     }
@@ -312,11 +313,11 @@ X64Reg RegCache::GetFreeXReg()
   }
 
   // Still no dice? Die!
-  _assert_msg_(DYNA_REC, 0, "Regcache ran out of regs");
+  ASSERT_MSG(DYNA_REC, 0, "Regcache ran out of regs");
   return INVALID_REG;
 }
 
-int RegCache::NumFreeRegisters()
+int RegCache::NumFreeRegisters() const
 {
   int count = 0;
   size_t aCount;
@@ -329,16 +330,16 @@ int RegCache::NumFreeRegisters()
 
 // Estimate roughly how bad it would be to de-allocate this register. Higher score
 // means more bad.
-float RegCache::ScoreRegister(X64Reg xr)
+float RegCache::ScoreRegister(X64Reg xreg) const
 {
-  size_t preg = m_xregs[xr].ppcReg;
+  size_t preg = m_xregs[xreg].ppcReg;
   float score = 0;
 
   // If it's not dirty, we don't need a store to write it back to the register file, so
   // bias a bit against dirty registers. Testing shows that a bias of 2 seems roughly
   // right: 3 causes too many extra clobbers, while 1 saves very few clobbers relative
   // to the number of extra stores it causes.
-  if (m_xregs[xr].dirty)
+  if (m_xregs[xreg].dirty)
     score += 2;
 
   // If the register isn't actually needed in a physical register for a later instruction,

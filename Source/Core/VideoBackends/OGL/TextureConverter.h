@@ -9,6 +9,8 @@
 
 #include "VideoCommon/VideoCommon.h"
 
+struct EFBCopyParams;
+
 namespace OGL
 {
 // Converts textures between formats using shaders
@@ -18,15 +20,10 @@ namespace TextureConverter
 void Init();
 void Shutdown();
 
-void EncodeToRamYUYV(GLuint srcTexture, const TargetRectangle& sourceRc, u8* destAddr, u32 dstWidth,
-                     u32 dstStride, u32 dstHeight);
-
-void DecodeToTexture(u32 xfbAddr, int srcWidth, int srcHeight, GLuint destTexture);
-
 // returns size of the encoded data (in bytes)
-void EncodeToRamFromTexture(u8* dest_ptr, u32 format, u32 native_width, u32 bytes_per_row,
-                            u32 num_blocks_y, u32 memory_stride, bool is_depth_copy,
-                            bool bIsIntensityFmt, int bScaleByHalf, const EFBRectangle& source);
+void EncodeToRamFromTexture(u8* dest_ptr, const EFBCopyParams& params, u32 native_width,
+                            u32 bytes_per_row, u32 num_blocks_y, u32 memory_stride,
+                            const EFBRectangle& src_rect, bool scale_by_half);
 }
 
 }  // namespace OGL

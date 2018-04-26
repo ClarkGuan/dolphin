@@ -38,10 +38,10 @@ namespace Device
 class OH0 final : public USBHost
 {
 public:
-  OH0(u32 device_id, const std::string& device_name);
+  OH0(Kernel& ios, const std::string& device_name);
   ~OH0() override;
 
-  ReturnCode Open(const OpenRequest& request) override;
+  IPCCommandResult Open(const OpenRequest& request) override;
   IPCCommandResult IOCtl(const IOCtlRequest& request) override;
   IPCCommandResult IOCtlV(const IOCtlVRequest& request) override;
 

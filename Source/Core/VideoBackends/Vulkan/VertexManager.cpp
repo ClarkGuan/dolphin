@@ -63,10 +63,10 @@ bool VertexManager::Initialize()
   return true;
 }
 
-NativeVertexFormat*
+std::unique_ptr<NativeVertexFormat>
 VertexManager::CreateNativeVertexFormat(const PortableVertexDeclaration& vtx_decl)
 {
-  return new VertexFormat(vtx_decl);
+  return std::make_unique<VertexFormat>(vtx_decl);
 }
 
 void VertexManager::PrepareDrawBuffers(u32 stride)
@@ -138,30 +138,7 @@ void VertexManager::vFlush()
   // Figure out the number of indices to draw
   u32 index_count = IndexGenerator::GetIndexLen();
 
-  // Update assembly state
-  StateTracker::GetInstance()->SetVertexFormat(vertex_format);
-  switch (m_current_primitive_type)
-  {
-  case PRIMITIVE_POINTS:
-    StateTracker::GetInstance()->SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_POINT_LIST);
-    StateTracker::GetInstance()->DisableBackFaceCulling();
-    break;
-
-  case PRIMITIVE_LINES:
-    StateTracker::GetInstance()->SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_LINE_LIST);
-    StateTracker::GetInstance()->DisableBackFaceCulling();
-    break;
-
-  case PRIMITIVE_TRIANGLES:
-    StateTracker::GetInstance()->SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
-    g_renderer->SetGenerationMode();
-    break;
-  }
-
-  // Check for any shader stage changes
-  StateTracker::GetInstance()->CheckForShaderChanges(m_current_primitive_type);
-
-  // Update any changed constants
+  // Update tracked state
   StateTracker::GetInstance()->UpdateVertexShaderConstants();
   StateTracker::GetInstance()->UpdateGeometryShaderConstants();
   StateTracker::GetInstance()->UpdatePixelShaderConstants();
@@ -186,21 +163,22 @@ void VertexManager::vFlush()
       bounding_box->Flush();
       bounding_box->Invalidate();
     }
-
-    // Update which descriptor set/pipeline layout to use.
-    StateTracker::GetInstance()->SetBBoxEnable(bounding_box_enabled);
   }
 
   // Bind all pending state to the command buffer
-  if (!StateTracker::GetInstance()->Bind())
+  if (m_current_pipeline_object)
   {
-    WARN_LOG(VIDEO, "Skipped draw of %u indices", index_count);
-    return;
-  }
+    g_renderer->SetPipeline(m_current_pipeline_object);
+    if (!StateTracker::GetInstance()->Bind())
+    {
+      WARN_LOG(VIDEO, "Skipped draw of %u indices", index_count);
+      return;
+    }
 
-  // Execute the draw
-  vkCmdDrawIndexed(g_command_buffer_mgr->GetCurrentCommandBuffer(), index_count, 1,
-                   m_current_draw_base_index, m_current_draw_base_vertex, 0);
+    // Execute the draw
+    vkCmdDrawIndexed(g_command_buffer_mgr->GetCurrentCommandBuffer(), index_count, 1,
+                     m_current_draw_base_index, m_current_draw_base_vertex, 0);
+  }
 
   StateTracker::GetInstance()->OnDraw();
 }

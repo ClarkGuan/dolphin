@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <set>
 #include <string>
@@ -14,8 +15,8 @@
 #include <wx/treebase.h>
 
 #include "Common/IniFile.h"
-#include "DolphinWX/ISOFile.h"
 #include "DolphinWX/PatchAddEdit.h"
+#include "UICommon/GameFile.h"
 
 class ActionReplayCodesPanel;
 class CheatWarningMessage;
@@ -30,7 +31,7 @@ class wxTextCtrl;
 
 namespace DiscIO
 {
-class IVolume;
+class Volume;
 }
 
 namespace Gecko
@@ -38,54 +39,41 @@ namespace Gecko
 class CodeConfigPanel;
 }
 
-struct PHackData
-{
-  bool PHackSZNear;
-  bool PHackSZFar;
-  std::string PHZNear;
-  std::string PHZFar;
-};
-
 wxDECLARE_EVENT(DOLPHIN_EVT_CHANGE_ISO_PROPERTIES_TITLE, wxCommandEvent);
 
 class CISOProperties : public wxDialog
 {
 public:
-  CISOProperties(const GameListItem& game_list_item, wxWindow* parent, wxWindowID id = wxID_ANY,
-                 const wxString& title = _("Properties"), const wxPoint& pos = wxDefaultPosition,
-                 const wxSize& size = wxDefaultSize,
+  CISOProperties(const UICommon::GameFile& game_list_item, wxWindow* parent,
+                 wxWindowID id = wxID_ANY, const wxString& title = _("Properties"),
+                 const wxPoint& pos = wxDefaultPosition, const wxSize& size = wxDefaultSize,
                  long style = wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER);
   virtual ~CISOProperties();
 
 private:
-  DECLARE_EVENT_TABLE();
+  DECLARE_EVENT_TABLE()
 
-  std::unique_ptr<DiscIO::IVolume> m_open_iso;
+  std::unique_ptr<DiscIO::Volume> m_open_iso;
 
-  std::vector<PatchEngine::Patch> onFrame;
-  PHackData m_PHack_Data;
+  std::vector<PatchEngine::Patch> m_on_frame;
 
   // Core
-  wxCheckBox *CPUThread, *MMU, *DCBZOFF, *FPRF;
-  wxCheckBox *SyncGPU, *FastDiscSpeed, *DSPHLE;
+  wxCheckBox *m_cpu_thread, *m_mmu, *m_dcbz_off, *m_fprf;
+  wxCheckBox *m_sync_gpu, *m_fast_disc_speed, *m_dps_hle;
 
-  wxArrayString arrayStringFor_GPUDeterminism;
-  wxChoice* GPUDeterminism;
+  wxArrayString m_gpu_determinism_string;
+  wxChoice* m_gpu_determinism;
   // Wii
-  wxCheckBox* EnableWideScreen;
+  wxCheckBox* m_enable_widescreen;
 
   // Stereoscopy
-  DolphinSlider* DepthPercentage;
-  wxSpinCtrl* Convergence;
-  wxCheckBox* MonoDepth;
+  DolphinSlider* m_depth_percentage;
+  wxSpinCtrl* m_convergence;
+  wxCheckBox* m_mono_depth;
 
-  wxArrayString arrayStringFor_EmuState;
-  wxChoice* EmuState;
-  wxTextCtrl* EmuIssues;
-
-  wxCheckListBox* Patches;
-  wxButton* EditPatch;
-  wxButton* RemovePatch;
+  wxCheckListBox* m_patches;
+  wxButton* m_edit_patch;
+  wxButton* m_remove_patch;
 
   ActionReplayCodesPanel* m_ar_code_panel;
   Gecko::CodeConfigPanel* m_geckocode_panel;
@@ -115,8 +103,6 @@ private:
     ID_ENABLEWIDESCREEN,
     ID_EDITCONFIG,
     ID_SHOWDEFAULTCONFIG,
-    ID_EMUSTATE,
-    ID_EMU_ISSUES,
     ID_PATCHES_LIST,
     ID_EDITPATCH,
     ID_ADDPATCH,
@@ -136,18 +122,17 @@ private:
   void OnShowDefaultConfig(wxCommandEvent& event);
   void PatchListSelectionChanged(wxCommandEvent& event);
   void PatchButtonClicked(wxCommandEvent& event);
-  void OnEmustateChanged(wxCommandEvent& event);
   void OnCheatCodeToggled(wxCommandEvent& event);
   void OnChangeTitle(wxCommandEvent& event);
 
-  const GameListItem OpenGameListItem;
+  const UICommon::GameFile m_open_gamelist_item;
 
-  IniFile GameIniDefault;
-  IniFile GameIniLocal;
-  std::string GameIniFileLocal;
-  std::string game_id;
+  IniFile m_gameini_default;
+  IniFile m_gameini_local;
+  std::string m_gameini_file_local;
+  std::string m_game_id;
 
-  std::set<std::string> DefaultPatches;
+  std::set<std::string> m_default_patches;
 
   void LoadGameConfig();
   bool SaveGameConfig();

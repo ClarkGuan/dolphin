@@ -2,14 +2,17 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include "Core/IOS/USB/OH0/OH0Device.h"
+
+#include <memory>
 #include <sstream>
+#include <string>
 #include <tuple>
 #include <vector>
 
 #include "Common/ChunkFile.h"
-#include "Core/IOS/IPC.h"
+#include "Core/IOS/IOS.h"
 #include "Core/IOS/USB/OH0/OH0.h"
-#include "Core/IOS/USB/OH0/OH0Device.h"
 
 namespace IOS
 {
@@ -37,7 +40,7 @@ static void GetVidPidFromDevicePath(const std::string& device_path, u16& vid, u1
   ss >> pid;
 }
 
-OH0Device::OH0Device(u32 id, const std::string& name) : Device(id, name, DeviceType::OH0)
+OH0Device::OH0Device(Kernel& ios, const std::string& name) : Device(ios, name, DeviceType::OH0)
 {
   if (!name.empty())
     GetVidPidFromDevicePath(name, m_vid, m_pid);
@@ -45,32 +48,29 @@ OH0Device::OH0Device(u32 id, const std::string& name) : Device(id, name, DeviceT
 
 void OH0Device::DoState(PointerWrap& p)
 {
-  m_oh0 = std::static_pointer_cast<OH0>(GetDeviceByName("/dev/usb/oh0"));
+  m_oh0 = std::static_pointer_cast<OH0>(GetIOS()->GetDeviceByName("/dev/usb/oh0"));
   p.Do(m_name);
   p.Do(m_vid);
   p.Do(m_pid);
   p.Do(m_device_id);
 }
 
-ReturnCode OH0Device::Open(const OpenRequest& request)
+IPCCommandResult OH0Device::Open(const OpenRequest& request)
 {
-  const u32 ios_major_version = GetVersion();
-  if (ios_major_version == 57 || ios_major_version == 58 || ios_major_version == 59)
-    return IPC_ENOENT;
-
   if (m_vid == 0 && m_pid == 0)
-    return IPC_ENOENT;
+    return GetDefaultReply(IPC_ENOENT);
 
-  m_oh0 = std::static_pointer_cast<OH0>(GetDeviceByName("/dev/usb/oh0"));
+  m_oh0 = std::static_pointer_cast<OH0>(GetIOS()->GetDeviceByName("/dev/usb/oh0"));
 
   ReturnCode return_code;
   std::tie(return_code, m_device_id) = m_oh0->DeviceOpen(m_vid, m_pid);
-  return return_code;
+  return GetDefaultReply(return_code);
 }
 
-void OH0Device::Close()
+IPCCommandResult OH0Device::Close(u32 fd)
 {
   m_oh0->DeviceClose(m_device_id);
+  return Device::Close(fd);
 }
 
 IPCCommandResult OH0Device::IOCtl(const IOCtlRequest& request)

@@ -2,16 +2,19 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include "VideoBackends/Software/TextureEncoder.h"
+
 #include "Common/Align.h"
 #include "Common/CommonFuncs.h"
 #include "Common/CommonTypes.h"
 #include "Common/MsgHandler.h"
+#include "Common/Swap.h"
 
 #include "VideoBackends/Software/EfbInterface.h"
-#include "VideoBackends/Software/TextureEncoder.h"
 
 #include "VideoCommon/BPMemory.h"
 #include "VideoCommon/LookUpTables.h"
+#include "VideoCommon/TextureCacheBase.h"
 #include "VideoCommon/TextureDecoder.h"
 
 namespace TextureEncoder
@@ -261,7 +264,7 @@ static void SetSpans(int sBlkSize, int tBlkSize, s32* tSpan, s32* sBlkSpan, s32*
   dstBlockStart += writeStride;                                                                    \
   }
 
-static void EncodeRGBA6(u8* dst, const u8* src, u32 format)
+static void EncodeRGBA6(u8* dst, const u8* src, EFBCopyFormat format, bool yuv)
 {
   u16 sBlkCount, tBlkCount, sBlkSize, tBlkSize;
   s32 tSpan, sBlkSpan, tBlkSpan, writeStride;
@@ -271,62 +274,121 @@ static void EncodeRGBA6(u8* dst, const u8* src, u32 format)
 
   switch (format)
   {
-  case GX_TF_I4:
+  case EFBCopyFormat::R4:
     SetBlockDimensions(3, 3, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     sBlkSize /= 2;
-    ENCODE_LOOP_BLOCKS
+    if (yuv)
     {
-      RGBA_to_RGB8(src, &r, &g, &b);
-      src += readStride;
-      *dst = RGB8_to_I(r, g, b) & 0xf0;
+      ENCODE_LOOP_BLOCKS
+      {
+        RGBA_to_RGB8(src, &r, &g, &b);
+        src += readStride;
+        *dst = RGB8_to_I(r, g, b) & 0xf0;
 
-      RGBA_to_RGB8(src, &r, &g, &b);
-      src += readStride;
-      *dst |= RGB8_to_I(r, g, b) >> 4;
-      dst++;
+        RGBA_to_RGB8(src, &r, &g, &b);
+        src += readStride;
+        *dst |= RGB8_to_I(r, g, b) >> 4;
+        dst++;
+      }
+      ENCODE_LOOP_SPANS
     }
-    ENCODE_LOOP_SPANS
+    else
+    {
+      ENCODE_LOOP_BLOCKS
+      {
+        u32 srcColor = *(u32*)src;
+        src += readStride;
+        *dst = (srcColor >> 16) & 0xf0;
+
+        srcColor = *(u32*)src;
+        src += readStride;
+        *dst |= (srcColor >> 20) & 0x0f;
+        dst++;
+      }
+      ENCODE_LOOP_SPANS
+    }
     break;
 
-  case GX_TF_I8:
+  case EFBCopyFormat::R8_0x1:
+  case EFBCopyFormat::R8:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
+    if (yuv)
     {
-      RGBA_to_RGB8(src, &r, &g, &b);
-      src += readStride;
-      *dst++ = RGB8_to_I(r, g, b);
+      ENCODE_LOOP_BLOCKS
+      {
+        RGBA_to_RGB8(src, &r, &g, &b);
+        src += readStride;
+        *dst++ = RGB8_to_I(r, g, b);
+      }
+      ENCODE_LOOP_SPANS
     }
-    ENCODE_LOOP_SPANS
+    else
+    {
+      ENCODE_LOOP_BLOCKS
+      {
+        u32 srcColor = *(u32*)src;
+        *dst++ = Convert6To8((srcColor >> 18) & 0x3f);
+        src += readStride;
+      }
+      ENCODE_LOOP_SPANS
+    }
     break;
 
-  case GX_TF_IA4:
+  case EFBCopyFormat::RA4:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
+    if (yuv)
     {
-      RGBA_to_RGBA8(src, &r, &g, &b, &a);
-      src += readStride;
-      *dst++ = (a & 0xf0) | (RGB8_to_I(r, g, b) >> 4);
+      ENCODE_LOOP_BLOCKS
+      {
+        RGBA_to_RGBA8(src, &r, &g, &b, &a);
+        src += readStride;
+        *dst++ = (a & 0xf0) | (RGB8_to_I(r, g, b) >> 4);
+      }
+      ENCODE_LOOP_SPANS
     }
-    ENCODE_LOOP_SPANS
+    else
+    {
+      ENCODE_LOOP_BLOCKS
+      {
+        u32 srcColor = *(u32*)src;
+        src += readStride;
+        *dst++ = ((srcColor << 2) & 0xf0) | ((srcColor >> 20) & 0x0f);
+      }
+      ENCODE_LOOP_SPANS
+    }
     break;
 
-  case GX_TF_IA8:
+  case EFBCopyFormat::RA8:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
+    if (yuv)
     {
-      RGBA_to_RGBA8(src, &r, &g, &b, &a);
-      src += readStride;
-      *dst++ = a;
-      *dst++ = RGB8_to_I(r, g, b);
+      ENCODE_LOOP_BLOCKS
+      {
+        RGBA_to_RGBA8(src, &r, &g, &b, &a);
+        src += readStride;
+        *dst++ = a;
+        *dst++ = RGB8_to_I(r, g, b);
+      }
+      ENCODE_LOOP_SPANS
     }
-    ENCODE_LOOP_SPANS
+    else
+    {
+      ENCODE_LOOP_BLOCKS
+      {
+        u32 srcColor = *(u32*)src;
+        src += readStride;
+        *dst++ = Convert6To8(srcColor & 0x3f);
+        *dst++ = Convert6To8((srcColor >> 18) & 0x3f);
+      }
+      ENCODE_LOOP_SPANS
+    }
     break;
 
-  case GX_TF_RGB565:
+  case EFBCopyFormat::RGB565:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -342,7 +404,7 @@ static void EncodeRGBA6(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_TF_RGB5A3:
+  case EFBCopyFormat::RGB5A3:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -365,7 +427,7 @@ static void EncodeRGBA6(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_TF_RGBA8:
+  case EFBCopyFormat::RGBA8:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -377,50 +439,7 @@ static void EncodeRGBA6(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS2
     break;
 
-  case GX_CTF_R4:
-    SetBlockDimensions(3, 3, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
-    SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    sBlkSize /= 2;
-    ENCODE_LOOP_BLOCKS
-    {
-      u32 srcColor = *(u32*)src;
-      src += readStride;
-      *dst = (srcColor >> 16) & 0xf0;
-
-      srcColor = *(u32*)src;
-      src += readStride;
-      *dst |= (srcColor >> 20) & 0x0f;
-      dst++;
-    }
-    ENCODE_LOOP_SPANS
-    break;
-
-  case GX_CTF_RA4:
-    SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
-    SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
-    {
-      u32 srcColor = *(u32*)src;
-      src += readStride;
-      *dst++ = ((srcColor << 2) & 0xf0) | ((srcColor >> 20) & 0x0f);
-    }
-    ENCODE_LOOP_SPANS
-    break;
-
-  case GX_CTF_RA8:
-    SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
-    SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
-    {
-      u32 srcColor = *(u32*)src;
-      src += readStride;
-      *dst++ = Convert6To8(srcColor & 0x3f);
-      *dst++ = Convert6To8((srcColor >> 18) & 0x3f);
-    }
-    ENCODE_LOOP_SPANS
-    break;
-
-  case GX_CTF_A8:
+  case EFBCopyFormat::A8:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -432,19 +451,7 @@ static void EncodeRGBA6(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_R8:
-    SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
-    SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
-    {
-      u32 srcColor = *(u32*)src;
-      *dst++ = Convert6To8((srcColor >> 18) & 0x3f);
-      src += readStride;
-    }
-    ENCODE_LOOP_SPANS
-    break;
-
-  case GX_CTF_G8:
+  case EFBCopyFormat::G8:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -456,7 +463,7 @@ static void EncodeRGBA6(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_B8:
+  case EFBCopyFormat::B8:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -468,7 +475,7 @@ static void EncodeRGBA6(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_RG8:
+  case EFBCopyFormat::RG8:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -481,7 +488,7 @@ static void EncodeRGBA6(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_GB8:
+  case EFBCopyFormat::GB8:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -495,12 +502,12 @@ static void EncodeRGBA6(u8* dst, const u8* src, u32 format)
     break;
 
   default:
-    PanicAlert("Unknown texture copy format: 0x%x\n", format);
+    PanicAlert("Unknown texture copy format: 0x%x\n", static_cast<int>(format));
     break;
   }
 }
 
-static void EncodeRGBA6halfscale(u8* dst, const u8* src, u32 format)
+static void EncodeRGBA6halfscale(u8* dst, const u8* src, EFBCopyFormat format, bool yuv)
 {
   u16 sBlkCount, tBlkCount, sBlkSize, tBlkSize;
   s32 tSpan, sBlkSpan, tBlkSpan, writeStride;
@@ -510,62 +517,121 @@ static void EncodeRGBA6halfscale(u8* dst, const u8* src, u32 format)
 
   switch (format)
   {
-  case GX_TF_I4:
+  case EFBCopyFormat::R4:
     SetBlockDimensions(3, 3, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     sBlkSize /= 2;
-    ENCODE_LOOP_BLOCKS
+    if (yuv)
     {
-      BoxfilterRGBA_to_RGB8(src, &r, &g, &b);
-      src += readStride;
-      *dst = RGB8_to_I(r, g, b) & 0xf0;
+      ENCODE_LOOP_BLOCKS
+      {
+        BoxfilterRGBA_to_RGB8(src, &r, &g, &b);
+        src += readStride;
+        *dst = RGB8_to_I(r, g, b) & 0xf0;
 
-      BoxfilterRGBA_to_RGB8(src, &r, &g, &b);
-      src += readStride;
-      *dst |= RGB8_to_I(r, g, b) >> 4;
-      dst++;
+        BoxfilterRGBA_to_RGB8(src, &r, &g, &b);
+        src += readStride;
+        *dst |= RGB8_to_I(r, g, b) >> 4;
+        dst++;
+      }
+      ENCODE_LOOP_SPANS
     }
-    ENCODE_LOOP_SPANS
+    else
+    {
+      ENCODE_LOOP_BLOCKS
+      {
+        BoxfilterRGBA_to_x8(src, &r, 18);
+        src += readStride;
+        *dst = r & 0xf0;
+
+        BoxfilterRGBA_to_x8(src, &r, 18);
+        src += readStride;
+        *dst |= r >> 4;
+        dst++;
+      }
+      ENCODE_LOOP_SPANS
+    }
     break;
 
-  case GX_TF_I8:
+  case EFBCopyFormat::R8_0x1:
+  case EFBCopyFormat::R8:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
+    if (yuv)
     {
-      BoxfilterRGBA_to_RGB8(src, &r, &g, &b);
-      src += readStride;
-      *dst++ = RGB8_to_I(r, g, b);
+      ENCODE_LOOP_BLOCKS
+      {
+        BoxfilterRGBA_to_RGB8(src, &r, &g, &b);
+        src += readStride;
+        *dst++ = RGB8_to_I(r, g, b);
+      }
+      ENCODE_LOOP_SPANS
     }
-    ENCODE_LOOP_SPANS
+    else
+    {
+      ENCODE_LOOP_BLOCKS
+      {
+        BoxfilterRGBA_to_x8(src, &r, 18);
+        *dst++ = r;
+        src += readStride;
+      }
+      ENCODE_LOOP_SPANS
+    }
     break;
 
-  case GX_TF_IA4:
+  case EFBCopyFormat::RA4:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
+    if (yuv)
     {
-      BoxfilterRGBA_to_RGBA8(src, &r, &g, &b, &a);
-      src += readStride;
-      *dst++ = (a & 0xf0) | (RGB8_to_I(r, g, b) >> 4);
+      ENCODE_LOOP_BLOCKS
+      {
+        BoxfilterRGBA_to_RGBA8(src, &r, &g, &b, &a);
+        src += readStride;
+        *dst++ = (a & 0xf0) | (RGB8_to_I(r, g, b) >> 4);
+      }
+      ENCODE_LOOP_SPANS
     }
-    ENCODE_LOOP_SPANS
+    else
+    {
+      ENCODE_LOOP_BLOCKS
+      {
+        BoxfilterRGBA_to_xx8(src, &r, &a, 18, 0);
+        src += readStride;
+        *dst++ = (a & 0xf0) | (r >> 4);
+      }
+      ENCODE_LOOP_SPANS
+    }
     break;
 
-  case GX_TF_IA8:
+  case EFBCopyFormat::RA8:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
+    if (yuv)
     {
-      BoxfilterRGBA_to_RGBA8(src, &r, &g, &b, &a);
-      src += readStride;
-      *dst++ = a;
-      *dst++ = RGB8_to_I(r, g, b);
+      ENCODE_LOOP_BLOCKS
+      {
+        BoxfilterRGBA_to_RGBA8(src, &r, &g, &b, &a);
+        src += readStride;
+        *dst++ = a;
+        *dst++ = RGB8_to_I(r, g, b);
+      }
+      ENCODE_LOOP_SPANS
     }
-    ENCODE_LOOP_SPANS
+    else
+    {
+      ENCODE_LOOP_BLOCKS
+      {
+        BoxfilterRGBA_to_xx8(src, &r, &a, 18, 0);
+        src += readStride;
+        *dst++ = a;
+        *dst++ = r;
+      }
+      ENCODE_LOOP_SPANS
+    }
     break;
 
-  case GX_TF_RGB565:
+  case EFBCopyFormat::RGB565:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -580,7 +646,7 @@ static void EncodeRGBA6halfscale(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_TF_RGB5A3:
+  case EFBCopyFormat::RGB5A3:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -600,7 +666,7 @@ static void EncodeRGBA6halfscale(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_TF_RGBA8:
+  case EFBCopyFormat::RGBA8:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -612,50 +678,7 @@ static void EncodeRGBA6halfscale(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS2
     break;
 
-  case GX_CTF_R4:
-    SetBlockDimensions(3, 3, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
-    SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    sBlkSize /= 2;
-    ENCODE_LOOP_BLOCKS
-    {
-      BoxfilterRGBA_to_x8(src, &r, 18);
-      src += readStride;
-      *dst = r & 0xf0;
-
-      BoxfilterRGBA_to_x8(src, &r, 18);
-      src += readStride;
-      *dst |= r >> 4;
-      dst++;
-    }
-    ENCODE_LOOP_SPANS
-    break;
-
-  case GX_CTF_RA4:
-    SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
-    SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
-    {
-      BoxfilterRGBA_to_xx8(src, &r, &a, 18, 0);
-      src += readStride;
-      *dst++ = (a & 0xf0) | (r >> 4);
-    }
-    ENCODE_LOOP_SPANS
-    break;
-
-  case GX_CTF_RA8:
-    SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
-    SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
-    {
-      BoxfilterRGBA_to_xx8(src, &r, &a, 18, 0);
-      src += readStride;
-      *dst++ = a;
-      *dst++ = r;
-    }
-    ENCODE_LOOP_SPANS
-    break;
-
-  case GX_CTF_A8:
+  case EFBCopyFormat::A8:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -667,19 +690,7 @@ static void EncodeRGBA6halfscale(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_R8:
-    SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
-    SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
-    {
-      BoxfilterRGBA_to_x8(src, &r, 18);
-      *dst++ = r;
-      src += readStride;
-    }
-    ENCODE_LOOP_SPANS
-    break;
-
-  case GX_CTF_G8:
+  case EFBCopyFormat::G8:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -691,7 +702,7 @@ static void EncodeRGBA6halfscale(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_B8:
+  case EFBCopyFormat::B8:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -703,7 +714,7 @@ static void EncodeRGBA6halfscale(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_RG8:
+  case EFBCopyFormat::RG8:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -716,7 +727,7 @@ static void EncodeRGBA6halfscale(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_GB8:
+  case EFBCopyFormat::GB8:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -730,12 +741,12 @@ static void EncodeRGBA6halfscale(u8* dst, const u8* src, u32 format)
     break;
 
   default:
-    PanicAlert("Unknown texture copy format: 0x%x\n", format);
+    PanicAlert("Unknown texture copy format: 0x%x\n", static_cast<int>(format));
     break;
   }
 }
 
-static void EncodeRGB8(u8* dst, const u8* src, u32 format)
+static void EncodeRGB8(u8* dst, const u8* src, EFBCopyFormat format, bool yuv)
 {
   u16 sBlkCount, tBlkCount, sBlkSize, tBlkSize;
   s32 tSpan, sBlkSpan, tBlkSpan, writeStride;
@@ -744,58 +755,113 @@ static void EncodeRGB8(u8* dst, const u8* src, u32 format)
 
   switch (format)
   {
-  case GX_TF_I4:
+  case EFBCopyFormat::R4:
     SetBlockDimensions(3, 3, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     sBlkSize /= 2;
-    ENCODE_LOOP_BLOCKS
+    if (yuv)
     {
-      *dst = RGB8_to_I(src[2], src[1], src[0]) & 0xf0;
-      src += readStride;
+      ENCODE_LOOP_BLOCKS
+      {
+        *dst = RGB8_to_I(src[2], src[1], src[0]) & 0xf0;
+        src += readStride;
 
-      *dst |= RGB8_to_I(src[2], src[1], src[0]) >> 4;
-      src += readStride;
-      dst++;
+        *dst |= RGB8_to_I(src[2], src[1], src[0]) >> 4;
+        src += readStride;
+        dst++;
+      }
+      ENCODE_LOOP_SPANS
     }
-    ENCODE_LOOP_SPANS
+    else
+    {
+      ENCODE_LOOP_BLOCKS
+      {
+        *dst = src[2] & 0xf0;
+        src += readStride;
+
+        *dst |= src[2] >> 4;
+        src += readStride;
+
+        dst++;
+      }
+      ENCODE_LOOP_SPANS
+    }
     break;
 
-  case GX_TF_I8:
+  case EFBCopyFormat::R8_0x1:
+  case EFBCopyFormat::R8:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
+    if (yuv)
     {
-      *dst++ = RGB8_to_I(src[2], src[1], src[0]);
-      src += readStride;
+      ENCODE_LOOP_BLOCKS
+      {
+        *dst++ = RGB8_to_I(src[2], src[1], src[0]);
+        src += readStride;
+      }
+      ENCODE_LOOP_SPANS
     }
-    ENCODE_LOOP_SPANS
+    else
+    {
+      ENCODE_LOOP_BLOCKS
+      {
+        *dst++ = src[2];
+        src += readStride;
+      }
+      ENCODE_LOOP_SPANS
+    }
     break;
 
-  case GX_TF_IA4:
+  case EFBCopyFormat::RA4:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
+    if (yuv)
     {
-      *dst++ = 0xf0 | (RGB8_to_I(src[2], src[1], src[0]) >> 4);
-      src += readStride;
+      ENCODE_LOOP_BLOCKS
+      {
+        *dst++ = 0xf0 | (RGB8_to_I(src[2], src[1], src[0]) >> 4);
+        src += readStride;
+      }
+      ENCODE_LOOP_SPANS
     }
-    ENCODE_LOOP_SPANS
+    else
+    {
+      ENCODE_LOOP_BLOCKS
+      {
+        *dst++ = 0xf0 | (src[2] >> 4);
+        src += readStride;
+      }
+      ENCODE_LOOP_SPANS
+    }
     break;
 
-  case GX_TF_IA8:
+  case EFBCopyFormat::RA8:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
+    if (yuv)
     {
-      *dst++ = 0xff;
-      *dst++ = RGB8_to_I(src[2], src[1], src[0]);
+      ENCODE_LOOP_BLOCKS
+      {
+        *dst++ = 0xff;
+        *dst++ = RGB8_to_I(src[2], src[1], src[0]);
 
-      src += readStride;
+        src += readStride;
+      }
+      ENCODE_LOOP_SPANS
     }
-    ENCODE_LOOP_SPANS
+    else
+    {
+      ENCODE_LOOP_BLOCKS
+      {
+        *dst++ = 0xff;
+        *dst++ = src[2];
+        src += readStride;
+      }
+      ENCODE_LOOP_SPANS
+    }
     break;
 
-  case GX_TF_RGB565:
+  case EFBCopyFormat::RGB565:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -808,7 +874,7 @@ static void EncodeRGB8(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_TF_RGB5A3:
+  case EFBCopyFormat::RGB5A3:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -822,7 +888,7 @@ static void EncodeRGB8(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_TF_RGBA8:
+  case EFBCopyFormat::RGBA8:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -837,65 +903,14 @@ static void EncodeRGB8(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS2
     break;
 
-  case GX_CTF_R4:
-    SetBlockDimensions(3, 3, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
-    SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    sBlkSize /= 2;
-    ENCODE_LOOP_BLOCKS
-    {
-      *dst = src[2] & 0xf0;
-      src += readStride;
-
-      *dst |= src[2] >> 4;
-      src += readStride;
-
-      dst++;
-    }
-    ENCODE_LOOP_SPANS
-    break;
-
-  case GX_CTF_RA4:
-    SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
-    SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
-    {
-      *dst++ = 0xf0 | (src[2] >> 4);
-      src += readStride;
-    }
-    ENCODE_LOOP_SPANS
-    break;
-
-  case GX_CTF_RA8:
-    SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
-    SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
-    {
-      *dst++ = 0xff;
-      *dst++ = src[2];
-      src += readStride;
-    }
-    ENCODE_LOOP_SPANS
-    break;
-
-  case GX_CTF_A8:
+  case EFBCopyFormat::A8:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS { *dst++ = 0xff; }
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_R8:
-    SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
-    SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
-    {
-      *dst++ = src[2];
-      src += readStride;
-    }
-    ENCODE_LOOP_SPANS
-    break;
-
-  case GX_CTF_G8:
+  case EFBCopyFormat::G8:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -906,7 +921,7 @@ static void EncodeRGB8(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_B8:
+  case EFBCopyFormat::B8:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -917,11 +932,12 @@ static void EncodeRGB8(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_RG8:
+  case EFBCopyFormat::RG8:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
     {
+      // FIXME: is this backwards?
       *dst++ = src[1];
       *dst++ = src[2];
       src += readStride;
@@ -929,7 +945,7 @@ static void EncodeRGB8(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_GB8:
+  case EFBCopyFormat::GB8:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -942,12 +958,12 @@ static void EncodeRGB8(u8* dst, const u8* src, u32 format)
     break;
 
   default:
-    PanicAlert("Unknown texture copy format: 0x%x\n", format);
+    PanicAlert("Unknown texture copy format: 0x%x\n", static_cast<int>(format));
     break;
   }
 }
 
-static void EncodeRGB8halfscale(u8* dst, const u8* src, u32 format)
+static void EncodeRGB8halfscale(u8* dst, const u8* src, EFBCopyFormat format, bool yuv)
 {
   u16 sBlkCount, tBlkCount, sBlkSize, tBlkSize;
   s32 tSpan, sBlkSpan, tBlkSpan, writeStride;
@@ -957,62 +973,122 @@ static void EncodeRGB8halfscale(u8* dst, const u8* src, u32 format)
 
   switch (format)
   {
-  case GX_TF_I4:
+  case EFBCopyFormat::R4:
     SetBlockDimensions(3, 3, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     sBlkSize /= 2;
-    ENCODE_LOOP_BLOCKS
+    if (yuv)
     {
-      BoxfilterRGB_to_RGB8(src, &r, &g, &b);
-      *dst = RGB8_to_I(r, g, b) & 0xf0;
-      src += readStride;
+      ENCODE_LOOP_BLOCKS
+      {
+        BoxfilterRGB_to_RGB8(src, &r, &g, &b);
+        *dst = RGB8_to_I(r, g, b) & 0xf0;
+        src += readStride;
 
-      BoxfilterRGB_to_RGB8(src, &r, &g, &b);
-      *dst |= RGB8_to_I(r, g, b) >> 4;
-      src += readStride;
-      dst++;
+        BoxfilterRGB_to_RGB8(src, &r, &g, &b);
+        *dst |= RGB8_to_I(r, g, b) >> 4;
+        src += readStride;
+        dst++;
+      }
+      ENCODE_LOOP_SPANS
     }
-    ENCODE_LOOP_SPANS
+    else
+    {
+      ENCODE_LOOP_BLOCKS
+      {
+        BoxfilterRGB_to_x8(src, &r, 2);
+        *dst = r & 0xf0;
+        src += readStride;
+
+        BoxfilterRGB_to_x8(src, &r, 2);
+        *dst |= r >> 4;
+        src += readStride;
+
+        dst++;
+      }
+      ENCODE_LOOP_SPANS
+    }
     break;
 
-  case GX_TF_I8:
+  case EFBCopyFormat::R8_0x1:
+  case EFBCopyFormat::R8:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
+    if (yuv)
     {
-      BoxfilterRGB_to_RGB8(src, &r, &g, &b);
-      *dst++ = RGB8_to_I(r, g, b);
-      src += readStride;
+      ENCODE_LOOP_BLOCKS
+      {
+        BoxfilterRGB_to_RGB8(src, &r, &g, &b);
+        *dst++ = RGB8_to_I(r, g, b);
+        src += readStride;
+      }
+      ENCODE_LOOP_SPANS
     }
-    ENCODE_LOOP_SPANS
+    else
+    {
+      ENCODE_LOOP_BLOCKS
+      {
+        BoxfilterRGB_to_x8(src, &r, 2);
+        *dst++ = r;
+        src += readStride;
+      }
+      ENCODE_LOOP_SPANS
+    }
     break;
 
-  case GX_TF_IA4:
+  case EFBCopyFormat::RA4:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
+    if (yuv)
     {
-      BoxfilterRGB_to_RGB8(src, &r, &g, &b);
-      *dst++ = 0xf0 | (RGB8_to_I(r, g, b) >> 4);
-      src += readStride;
+      ENCODE_LOOP_BLOCKS
+      {
+        BoxfilterRGB_to_RGB8(src, &r, &g, &b);
+        *dst++ = 0xf0 | (RGB8_to_I(r, g, b) >> 4);
+        src += readStride;
+      }
+      ENCODE_LOOP_SPANS
     }
-    ENCODE_LOOP_SPANS
+    else
+    {
+      ENCODE_LOOP_BLOCKS
+      {
+        BoxfilterRGB_to_x8(src, &r, 2);
+        *dst++ = 0xf0 | (r >> 4);
+        src += readStride;
+      }
+      ENCODE_LOOP_SPANS
+    }
     break;
 
-  case GX_TF_IA8:
+  case EFBCopyFormat::RA8:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
+    if (yuv)
     {
-      BoxfilterRGB_to_RGB8(src, &r, &g, &b);
-      *dst++ = 0xff;
-      *dst++ = RGB8_to_I(r, g, b);
-      src += readStride;
+      ENCODE_LOOP_BLOCKS
+      {
+        BoxfilterRGB_to_RGB8(src, &r, &g, &b);
+        *dst++ = 0xff;
+        *dst++ = RGB8_to_I(r, g, b);
+        src += readStride;
+      }
+      ENCODE_LOOP_SPANS
     }
-    ENCODE_LOOP_SPANS
+    else
+    {
+      ENCODE_LOOP_BLOCKS
+      {
+        BoxfilterRGB_to_x8(src, &r, 2);
+        *dst++ = 0xff;
+        *dst++ = r;
+        src += readStride;
+      }
+      ENCODE_LOOP_SPANS
+    }
     break;
 
-  case GX_TF_RGB565:
+  case EFBCopyFormat::RGB565:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -1026,7 +1102,7 @@ static void EncodeRGB8halfscale(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_TF_RGB5A3:
+  case EFBCopyFormat::RGB5A3:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -1040,7 +1116,7 @@ static void EncodeRGB8halfscale(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_TF_RGBA8:
+  case EFBCopyFormat::RGBA8:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -1056,70 +1132,14 @@ static void EncodeRGB8halfscale(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS2
     break;
 
-  case GX_CTF_R4:
-    SetBlockDimensions(3, 3, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
-    SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    sBlkSize /= 2;
-    ENCODE_LOOP_BLOCKS
-    {
-      BoxfilterRGB_to_x8(src, &r, 2);
-      *dst = r & 0xf0;
-      src += readStride;
-
-      BoxfilterRGB_to_x8(src, &r, 2);
-      *dst |= r >> 4;
-      src += readStride;
-
-      dst++;
-    }
-    ENCODE_LOOP_SPANS
-    break;
-
-  case GX_CTF_RA4:
-    SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
-    SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
-    {
-      BoxfilterRGB_to_x8(src, &r, 2);
-      *dst++ = 0xf0 | (r >> 4);
-      src += readStride;
-    }
-    ENCODE_LOOP_SPANS
-    break;
-
-  case GX_CTF_RA8:
-    SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
-    SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
-    {
-      BoxfilterRGB_to_x8(src, &r, 2);
-      *dst++ = 0xff;
-      *dst++ = r;
-      src += readStride;
-    }
-    ENCODE_LOOP_SPANS
-    break;
-
-  case GX_CTF_A8:
+  case EFBCopyFormat::A8:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS { *dst++ = 0xff; }
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_R8:
-    SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
-    SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
-    {
-      BoxfilterRGB_to_x8(src, &r, 2);
-      *dst++ = r;
-      src += readStride;
-    }
-    ENCODE_LOOP_SPANS
-    break;
-
-  case GX_CTF_G8:
+  case EFBCopyFormat::G8:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -1131,7 +1151,7 @@ static void EncodeRGB8halfscale(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_B8:
+  case EFBCopyFormat::B8:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -1143,7 +1163,7 @@ static void EncodeRGB8halfscale(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_RG8:
+  case EFBCopyFormat::RG8:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -1156,7 +1176,7 @@ static void EncodeRGB8halfscale(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_GB8:
+  case EFBCopyFormat::GB8:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -1170,12 +1190,12 @@ static void EncodeRGB8halfscale(u8* dst, const u8* src, u32 format)
     break;
 
   default:
-    PanicAlert("Unknown texture copy format: 0x%x\n", format);
+    PanicAlert("Unknown texture copy format: 0x%x\n", static_cast<int>(format));
     break;
   }
 }
 
-static void EncodeZ24(u8* dst, const u8* src, u32 format)
+static void EncodeZ24(u8* dst, const u8* src, EFBCopyFormat format)
 {
   u16 sBlkCount, tBlkCount, sBlkSize, tBlkSize;
   s32 tSpan, sBlkSpan, tBlkSpan, writeStride;
@@ -1184,7 +1204,8 @@ static void EncodeZ24(u8* dst, const u8* src, u32 format)
 
   switch (format)
   {
-  case GX_TF_Z8:
+  case EFBCopyFormat::R8_0x1:
+  case EFBCopyFormat::R8:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -1195,19 +1216,9 @@ static void EncodeZ24(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_TF_Z16:
-    SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
-    SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
-    {
-      *dst++ = src[1];
-      *dst++ = src[2];
-      src += readStride;
-    }
-    ENCODE_LOOP_SPANS
-    break;
+    // FIXME: handle RA8?
 
-  case GX_TF_Z24X8:
+  case EFBCopyFormat::RGBA8:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -1222,7 +1233,7 @@ static void EncodeZ24(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS2
     break;
 
-  case GX_CTF_Z4:
+  case EFBCopyFormat::R4:
     SetBlockDimensions(3, 3, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     sBlkSize /= 2;
@@ -1239,7 +1250,7 @@ static void EncodeZ24(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_Z8M:
+  case EFBCopyFormat::G8:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -1250,7 +1261,7 @@ static void EncodeZ24(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_Z8L:
+  case EFBCopyFormat::B8:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -1261,7 +1272,20 @@ static void EncodeZ24(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_Z16L:
+  case EFBCopyFormat::RG8:
+    SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
+    SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
+    ENCODE_LOOP_BLOCKS
+    {
+      // FIXME: should these be reversed?
+      *dst++ = src[1];
+      *dst++ = src[2];
+      src += readStride;
+    }
+    ENCODE_LOOP_SPANS
+    break;
+
+  case EFBCopyFormat::GB8:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -1274,12 +1298,12 @@ static void EncodeZ24(u8* dst, const u8* src, u32 format)
     break;
 
   default:
-    PanicAlert("Unknown texture copy format: 0x%x\n", format);
+    PanicAlert("Unknown texture copy format: 0x%x\n", static_cast<int>(format));
     break;
   }
 }
 
-static void EncodeZ24halfscale(u8* dst, const u8* src, u32 format)
+static void EncodeZ24halfscale(u8* dst, const u8* src, EFBCopyFormat format)
 {
   u16 sBlkCount, tBlkCount, sBlkSize, tBlkSize;
   s32 tSpan, sBlkSpan, tBlkSpan, writeStride;
@@ -1289,7 +1313,8 @@ static void EncodeZ24halfscale(u8* dst, const u8* src, u32 format)
 
   switch (format)
   {
-  case GX_TF_Z8:
+  case EFBCopyFormat::R8_0x1:
+  case EFBCopyFormat::R8:
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -1301,20 +1326,9 @@ static void EncodeZ24halfscale(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_TF_Z16:
-    SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
-    SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
-    ENCODE_LOOP_BLOCKS
-    {
-      BoxfilterRGB_to_xx8(src, &g, &b, 1, 2);
-      *dst++ = b;
-      *dst++ = g;
-      src += readStride;
-    }
-    ENCODE_LOOP_SPANS
-    break;
+    // FIXME: handle RA8?
 
-  case GX_TF_Z24X8:
+  case EFBCopyFormat::RGBA8:
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -1327,7 +1341,7 @@ static void EncodeZ24halfscale(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS2
     break;
 
-  case GX_CTF_Z4:
+  case EFBCopyFormat::R4:  // Z4
     SetBlockDimensions(3, 3, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     sBlkSize /= 2;
@@ -1346,7 +1360,7 @@ static void EncodeZ24halfscale(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_Z8M:
+  case EFBCopyFormat::G8:  // Z8M
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -1358,7 +1372,7 @@ static void EncodeZ24halfscale(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_Z8L:
+  case EFBCopyFormat::B8:  // Z8L
     SetBlockDimensions(3, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -1370,7 +1384,7 @@ static void EncodeZ24halfscale(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
-  case GX_CTF_Z16L:
+  case EFBCopyFormat::RG8:  // RG8
     SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
     SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
     ENCODE_LOOP_BLOCKS
@@ -1383,57 +1397,88 @@ static void EncodeZ24halfscale(u8* dst, const u8* src, u32 format)
     ENCODE_LOOP_SPANS
     break;
 
+  case EFBCopyFormat::GB8:
+    SetBlockDimensions(2, 2, &sBlkCount, &tBlkCount, &sBlkSize, &tBlkSize);
+    SetSpans(sBlkSize, tBlkSize, &tSpan, &sBlkSpan, &tBlkSpan, &writeStride);
+    ENCODE_LOOP_BLOCKS
+    {
+      BoxfilterRGB_to_xx8(src, &g, &b, 1, 2);
+      // FIXME: is this backwards?
+      *dst++ = b;
+      *dst++ = g;
+      src += readStride;
+    }
+    ENCODE_LOOP_SPANS
+    break;
+
   default:
-    PanicAlert("Unknown texture copy format: 0x%x\n", format);
+    PanicAlert("Unknown texture copy format: 0x%x\n", static_cast<int>(format));
     break;
   }
 }
 
-void Encode(u8* dest_ptr)
+namespace
 {
-  auto pixelformat = bpmem.zcontrol.pixel_format;
-  bool bFromZBuffer = pixelformat == PEControl::Z24;
-  bool bIsIntensityFmt = bpmem.triggerEFBCopy.intensity_fmt > 0;
-  u32 copyfmt = ((bpmem.triggerEFBCopy.target_pixel_format / 2) +
-                 ((bpmem.triggerEFBCopy.target_pixel_format & 1) * 8));
+void EncodeEfbCopy(u8* dst, const EFBCopyParams& params, u32 native_width, u32 bytes_per_row,
+                   u32 num_blocks_y, u32 memory_stride, const EFBRectangle& src_rect,
+                   bool scale_by_half)
+{
+  const u8* src = EfbInterface::GetPixelPointer(src_rect.left, src_rect.top, params.depth);
 
-  // pack copy format information into a single variable
-  u32 format = copyfmt;
-  if (bFromZBuffer)
+  if (scale_by_half)
   {
-    format |= _GX_TF_ZTF;
-    if (copyfmt == 11)
-      format = GX_TF_Z16;
-    else if (format < GX_TF_Z8 || format > GX_TF_Z24X8)
-      format |= _GX_TF_CTF;
-  }
-  else if (copyfmt > GX_TF_RGBA8 || (copyfmt < GX_TF_RGB565 && !bIsIntensityFmt))
-    format |= _GX_TF_CTF;
-
-  const u8* src =
-      EfbInterface::GetPixelPointer(bpmem.copyTexSrcXY.x, bpmem.copyTexSrcXY.y, bFromZBuffer);
-
-  if (bpmem.triggerEFBCopy.half_scale)
-  {
-    if (pixelformat == PEControl::RGBA6_Z24)
-      EncodeRGBA6halfscale(dest_ptr, src, format);
-    else if (pixelformat == PEControl::RGB8_Z24)
-      EncodeRGB8halfscale(dest_ptr, src, format);
-    else if (pixelformat == PEControl::RGB565_Z16)  // not supported
-      EncodeRGB8halfscale(dest_ptr, src, format);
-    else if (pixelformat == PEControl::Z24)
-      EncodeZ24halfscale(dest_ptr, src, format);
+    switch (params.efb_format)
+    {
+    case PEControl::RGBA6_Z24:
+      EncodeRGBA6halfscale(dst, src, params.copy_format, params.yuv);
+      break;
+    case PEControl::RGB8_Z24:
+      EncodeRGB8halfscale(dst, src, params.copy_format, params.yuv);
+      break;
+    case PEControl::RGB565_Z16:
+      EncodeRGB8halfscale(dst, src, params.copy_format, params.yuv);
+      break;
+    case PEControl::Z24:
+      EncodeZ24halfscale(dst, src, params.copy_format);
+      break;
+    default:
+      break;
+    }
   }
   else
   {
-    if (pixelformat == PEControl::RGBA6_Z24)
-      EncodeRGBA6(dest_ptr, src, format);
-    else if (pixelformat == PEControl::RGB8_Z24)
-      EncodeRGB8(dest_ptr, src, format);
-    else if (pixelformat == PEControl::RGB565_Z16)  // not supported
-      EncodeRGB8(dest_ptr, src, format);
-    else if (pixelformat == PEControl::Z24)
-      EncodeZ24(dest_ptr, src, format);
+    switch (params.efb_format)
+    {
+    case PEControl::RGBA6_Z24:
+      EncodeRGBA6(dst, src, params.copy_format, params.yuv);
+      break;
+    case PEControl::RGB8_Z24:
+      EncodeRGB8(dst, src, params.copy_format, params.yuv);
+      break;
+    case PEControl::RGB565_Z16:
+      EncodeRGB8(dst, src, params.copy_format, params.yuv);
+      break;
+    case PEControl::Z24:
+      EncodeZ24(dst, src, params.copy_format);
+      break;
+    default:
+      break;
+    }
+  }
+}
+}
+
+void Encode(u8* dst, const EFBCopyParams& params, u32 native_width, u32 bytes_per_row,
+            u32 num_blocks_y, u32 memory_stride, const EFBRectangle& src_rect, bool scale_by_half)
+{
+  if (params.copy_format == EFBCopyFormat::XFB)
+  {
+    EfbInterface::EncodeXFB(dst, native_width, src_rect, params.y_scale);
+  }
+  else
+  {
+    EncodeEfbCopy(dst, params, native_width, bytes_per_row, num_blocks_y, memory_stride, src_rect,
+                  scale_by_half);
   }
 }
 }

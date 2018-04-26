@@ -1,17 +1,16 @@
 package org.dolphinemu.dolphinemu.ui.settings;
 
 import android.app.Activity;
-import android.app.Fragment;
 import android.content.Context;
 import android.os.Bundle;
 import android.support.annotation.Nullable;
+import android.support.v4.app.Fragment;
 import android.support.v7.widget.LinearLayoutManager;
 import android.support.v7.widget.RecyclerView;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 
-import org.dolphinemu.dolphinemu.BuildConfig;
 import org.dolphinemu.dolphinemu.R;
 import org.dolphinemu.dolphinemu.model.settings.Setting;
 import org.dolphinemu.dolphinemu.model.settings.SettingSection;
@@ -24,10 +23,25 @@ import java.util.HashMap;
 
 public final class SettingsFragment extends Fragment implements SettingsFragmentView
 {
+	private static final String ARGUMENT_MENU_TAG = "menu_tag";
+	private static final String ARGUMENT_GAME_ID = "game_id";
+
 	private SettingsFragmentPresenter mPresenter = new SettingsFragmentPresenter(this);
 	private SettingsActivityView mActivity;
 
 	private SettingsAdapter mAdapter;
+
+	public static Fragment newInstance(String menuTag, String gameId)
+	{
+		SettingsFragment fragment = new SettingsFragment();
+
+		Bundle arguments = new Bundle();
+		arguments.putString(ARGUMENT_MENU_TAG, menuTag);
+		arguments.putString(ARGUMENT_GAME_ID, gameId);
+
+		fragment.setArguments(arguments);
+		return fragment;
+	}
 
 	@Override
 	public void onAttach(Context context)
@@ -59,10 +73,11 @@ public final class SettingsFragment extends Fragment implements SettingsFragment
 
 		setRetainInstance(true);
 		String menuTag = getArguments().getString(ARGUMENT_MENU_TAG);
+		String gameId = getArguments().getString(ARGUMENT_GAME_ID);
 
 		mAdapter = new SettingsAdapter(this, getActivity());
 
-		mPresenter.onCreate(menuTag);
+		mPresenter.onCreate(menuTag, gameId);
 	}
 
 	@Nullable
@@ -135,7 +150,7 @@ public final class SettingsFragment extends Fragment implements SettingsFragment
 	@Override
 	public void loadSubMenu(String menuKey)
 	{
-		mActivity.showSettingsFragment(menuKey, true);
+		mActivity.showSettingsFragment(menuKey, true, getArguments().getString(ARGUMENT_GAME_ID));
 	}
 
 	@Override
@@ -174,18 +189,4 @@ public final class SettingsFragment extends Fragment implements SettingsFragment
 		mActivity.onExtensionSettingChanged(key, value);
 	}
 
-	public static final String FRAGMENT_TAG = BuildConfig.APPLICATION_ID + ".fragment.settings";
-
-	public static final String ARGUMENT_MENU_TAG = FRAGMENT_TAG + ".menu_tag";
-
-	public static Fragment newInstance(String menuTag)
-	{
-		SettingsFragment fragment = new SettingsFragment();
-
-		Bundle arguments = new Bundle();
-		arguments.putString(ARGUMENT_MENU_TAG, menuTag);
-
-		fragment.setArguments(arguments);
-		return fragment;
-	}
 }

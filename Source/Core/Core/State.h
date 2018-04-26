@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -42,15 +43,12 @@ std::string GetInfoStringOfSlot(int slot, bool translate = true);
 // Slots from 0-99.
 void Save(int slot, bool wait = false);
 void Load(int slot);
-void Verify(int slot);
 
 void SaveAs(const std::string& filename, bool wait = false);
 void LoadAs(const std::string& filename);
-void VerifyAt(const std::string& filename);
 
 void SaveToBuffer(std::vector<u8>& buffer);
 void LoadFromBuffer(std::vector<u8>& buffer);
-void VerifyBuffer(std::vector<u8>& buffer);
 
 void LoadLastSaved(int i = 1);
 void SaveFirstSaved();
@@ -61,6 +59,6 @@ void UndoLoadState();
 void Flush();
 
 // for calling back into UI code without introducing a dependency on it in core
-typedef void (*CallbackFunc)(void);
-void SetOnAfterLoadCallback(CallbackFunc callback);
+using AfterLoadCallbackFunc = std::function<void()>;
+void SetOnAfterLoadCallback(AfterLoadCallbackFunc callback);
 }

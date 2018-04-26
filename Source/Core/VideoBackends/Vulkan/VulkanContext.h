@@ -35,6 +35,7 @@ public:
   static void PopulateBackendInfo(VideoConfig* config);
   static void PopulateBackendInfoAdapters(VideoConfig* config, const GPUList& gpu_list);
   static void PopulateBackendInfoFeatures(VideoConfig* config, VkPhysicalDevice gpu,
+                                          const VkPhysicalDeviceProperties& properties,
                                           const VkPhysicalDeviceFeatures& features);
   static void PopulateBackendInfoMultisampleModes(VideoConfig* config, VkPhysicalDevice gpu,
                                                   const VkPhysicalDeviceProperties& properties);
@@ -56,6 +57,8 @@ public:
   VkDevice GetDevice() const { return m_device; }
   VkQueue GetGraphicsQueue() const { return m_graphics_queue; }
   u32 GetGraphicsQueueFamilyIndex() const { return m_graphics_queue_family_index; }
+  VkQueue GetPresentQueue() const { return m_present_queue; }
+  u32 GetPresentQueueFamilyIndex() const { return m_present_queue_family_index; }
   const VkQueueFamilyProperties& GetGraphicsQueueProperties() const
   {
     return m_graphics_queue_properties;
@@ -80,6 +83,7 @@ public:
   {
     return m_device_features.occlusionQueryPrecise == VK_TRUE;
   }
+  bool SupportsNVGLSLExtension() const { return m_supports_nv_glsl_extension; }
   // Helpers for getting constants
   VkDeviceSize GetUniformBufferAlignment() const
   {
@@ -110,6 +114,7 @@ private:
   bool SelectDeviceExtensions(ExtensionList* extension_list, bool enable_surface);
   bool SelectDeviceFeatures();
   bool CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer);
+  void InitDriverDetails();
 
   VkInstance m_instance = VK_NULL_HANDLE;
   VkPhysicalDevice m_physical_device = VK_NULL_HANDLE;
@@ -117,6 +122,8 @@ private:
 
   VkQueue m_graphics_queue = VK_NULL_HANDLE;
   u32 m_graphics_queue_family_index = 0;
+  VkQueue m_present_queue = VK_NULL_HANDLE;
+  u32 m_present_queue_family_index = 0;
   VkQueueFamilyProperties m_graphics_queue_properties = {};
 
   VkDebugReportCallbackEXT m_debug_report_callback = VK_NULL_HANDLE;
@@ -124,6 +131,8 @@ private:
   VkPhysicalDeviceFeatures m_device_features = {};
   VkPhysicalDeviceProperties m_device_properties = {};
   VkPhysicalDeviceMemoryProperties m_device_memory_properties = {};
+
+  bool m_supports_nv_glsl_extension = false;
 };
 
 extern std::unique_ptr<VulkanContext> g_vulkan_context;

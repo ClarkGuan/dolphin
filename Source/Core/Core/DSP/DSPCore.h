@@ -16,9 +16,11 @@
 
 namespace DSP
 {
+class Accelerator;
+
 namespace JIT
 {
-namespace x86
+namespace x64
 {
 class DSPEmitter;
 }
@@ -299,6 +301,8 @@ struct SDSP
   // Accelerator / DMA / other hardware registers. Not GPRs.
   std::array<u16, 256> ifx_regs;
 
+  std::unique_ptr<Accelerator> accelerator;
+
   // When state saving, all of the above can just be memcpy'd into the save state.
   // The below needs special handling.
   u16* iram;
@@ -313,7 +317,7 @@ struct SDSP
 extern SDSP g_dsp;
 extern DSPBreakpoints g_dsp_breakpoints;
 extern bool g_init_hax;
-extern std::unique_ptr<JIT::x86::DSPEmitter> g_dsp_jit;
+extern std::unique_ptr<JIT::x64::DSPEmitter> g_dsp_jit;
 extern std::unique_ptr<DSPCaptureLogger> g_dsp_cap;
 
 struct DSPInitOptions

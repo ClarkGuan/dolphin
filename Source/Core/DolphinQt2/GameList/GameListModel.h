@@ -4,11 +4,14 @@
 
 #pragma once
 
+#include <memory>
+#include <string>
+
 #include <QAbstractTableModel>
 #include <QString>
 
-#include "DolphinQt2/GameList/GameFile.h"
 #include "DolphinQt2/GameList/GameTracker.h"
+#include "UICommon/GameFile.h"
 
 class GameListModel final : public QAbstractTableModel
 {
@@ -24,34 +27,39 @@ public:
   int rowCount(const QModelIndex& parent) const override;
   int columnCount(const QModelIndex& parent) const override;
 
-  // Path of the Game at the specified index.
-  QString GetPath(int index) const { return m_games[index]->GetFilePath(); }
+  std::shared_ptr<const UICommon::GameFile> GetGameFile(int index) const;
+  // Path of the game at the specified index.
+  QString GetPath(int index) const { return QString::fromStdString(m_games[index]->GetFilePath()); }
+  // Unique identifier of the game at the specified index.
+  QString GetUniqueIdentifier(int index) const
+  {
+    return QString::fromStdString(m_games[index]->GetUniqueIdentifier());
+  }
+  bool ShouldDisplayGameListItem(int index) const;
+  void SetSearchTerm(const QString& term);
+
   enum
   {
     COL_PLATFORM = 0,
-    COL_ID,
     COL_BANNER,
     COL_TITLE,
     COL_DESCRIPTION,
     COL_MAKER,
-    COL_SIZE,
+    COL_ID,
     COL_COUNTRY,
-    COL_RATING,
+    COL_SIZE,
+    COL_FILE_NAME,
     NUM_COLS
   };
 
-public slots:
-  void UpdateGame(QSharedPointer<GameFile> game);
-  void RemoveGame(const QString& path);
-
-signals:
-  void DirectoryAdded(const QString& dir);
-  void DirectoryRemoved(const QString& dir);
+  void UpdateGame(const std::shared_ptr<const UICommon::GameFile>& game);
+  void RemoveGame(const std::string& path);
 
 private:
   // Index in m_games, or -1 if it isn't found
-  int FindGame(const QString& path) const;
+  int FindGame(const std::string& path) const;
 
   GameTracker m_tracker;
-  QList<QSharedPointer<GameFile>> m_games;
+  QList<std::shared_ptr<const UICommon::GameFile>> m_games;
+  QString m_term;
 };

@@ -2,9 +2,9 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include <windows.h>
 #include <array>
 #include <string>
-#include <windows.h>
 
 #include "Common/GL/GLInterface/WGL.h"
 #include "Common/Logging/Log.h"
@@ -200,7 +200,7 @@ bool cInterfaceWGL::PeekMessages()
 
 // Create rendering window.
 // Call browser: Core.cpp:EmuThread() > main.cpp:Video_Initialize()
-bool cInterfaceWGL::Create(void* window_handle, bool core)
+bool cInterfaceWGL::Create(void* window_handle, bool stereo, bool core)
 {
   if (!window_handle)
     return false;
@@ -219,12 +219,16 @@ bool cInterfaceWGL::Create(void* window_handle, bool core)
   s_backbuffer_width = twidth;
   s_backbuffer_height = theight;
 
-  static constexpr PIXELFORMATDESCRIPTOR pfd = {
+  const DWORD stereo_flag = stereo ? PFD_STEREO : 0;
+
+  // clang-format off
+  static const PIXELFORMATDESCRIPTOR pfd = {
       sizeof(PIXELFORMATDESCRIPTOR),  // Size Of This Pixel Format Descriptor
       1,                              // Version Number
       PFD_DRAW_TO_WINDOW |            // Format Must Support Window
           PFD_SUPPORT_OPENGL |        // Format Must Support OpenGL
-          PFD_DOUBLEBUFFER,           // Must Support Double Buffering
+          PFD_DOUBLEBUFFER |          // Must Support Double Buffering
+          stereo_flag,                // Could Support Quad Buffering
       PFD_TYPE_RGBA,                  // Request An RGBA Format
       32,                             // Select Our Color Depth
       0,
@@ -240,6 +244,7 @@ bool cInterfaceWGL::Create(void* window_handle, bool core)
       0,               // Reserved
       0, 0, 0          // Layer Masks Ignored
   };
+  // clang-format on
 
   m_dc = GetDC(m_window_handle);
   if (!m_dc)
@@ -248,8 +253,8 @@ bool cInterfaceWGL::Create(void* window_handle, bool core)
     return false;
   }
 
-  int pixel_format;
-  if (!(pixel_format = ChoosePixelFormat(m_dc, &pfd)))
+  int pixel_format = ChoosePixelFormat(m_dc, &pfd);
+  if (!pixel_format)
   {
     PanicAlert("(2) Can't find a suitable PixelFormat.");
     return false;
@@ -261,7 +266,8 @@ bool cInterfaceWGL::Create(void* window_handle, bool core)
     return false;
   }
 
-  if (!(m_rc = wglCreateContext(m_dc)))
+  m_rc = wglCreateContext(m_dc);
+  if (!m_rc)
   {
     PanicAlert("(4) Can't create an OpenGL rendering context.");
     return false;
@@ -355,22 +361,22 @@ HGLRC cInterfaceWGL::CreateCoreContext(HDC dc, HGLRC share_context)
   for (const auto& version : try_versions)
   {
     // Construct list of attributes. Prefer a forward-compatible, core context.
-    std::array<int, 5 * 2> attribs = {
-        WGL_CONTEXT_PROFILE_MASK_ARB,
-        WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
+    std::array<int, 5 * 2> attribs = {WGL_CONTEXT_PROFILE_MASK_ARB,
+                                      WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
 #ifdef _DEBUG
-        WGL_CONTEXT_FLAGS_ARB,
-        WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB | WGL_CONTEXT_DEBUG_BIT_ARB,
+                                      WGL_CONTEXT_FLAGS_ARB,
+                                      WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB |
+                                          WGL_CONTEXT_DEBUG_BIT_ARB,
 #else
-        WGL_CONTEXT_FLAGS_ARB,
-        WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB,
+                                      WGL_CONTEXT_FLAGS_ARB,
+                                      WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB,
 #endif
-        WGL_CONTEXT_MAJOR_VERSION_ARB,
-        version.first,
-        WGL_CONTEXT_MINOR_VERSION_ARB,
-        version.second,
-        0,
-        0};
+                                      WGL_CONTEXT_MAJOR_VERSION_ARB,
+                                      version.first,
+                                      WGL_CONTEXT_MINOR_VERSION_ARB,
+                                      version.second,
+                                      0,
+                                      0};
 
     // Attempt creating this context.
     HGLRC core_context = wglCreateContextAttribsARB(dc, nullptr, attribs.data());
